@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import urllib.error
@@ -157,11 +158,12 @@ def _write_file(arguments: dict) -> str:
         return "错误：缺少必需参数 file_path"
     if content is None:
         return "错误：缺少必需参数 content"
-    if file_path not in _opened_files:
+    if file_path not in _opened_files and os.path.exists(file_path):
         return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
+        _opened_files.add(file_path)
         return f"成功写入文件: {file_path}"
     except PermissionError:
         return f"错误：没有写入权限: {file_path}"
@@ -180,7 +182,7 @@ def _edit_file(arguments: dict) -> str:
         return "错误：缺少必需参数 old_string"
     if new_string is None:
         return "错误：缺少必需参数 new_string"
-    if file_path not in _opened_files:
+    if file_path not in _opened_files and os.path.exists(file_path):
         return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -193,6 +195,7 @@ def _edit_file(arguments: dict) -> str:
         new_content = content.replace(old_string, new_string, 1)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
+        _opened_files.add(file_path)
         return f"成功编辑文件: {file_path}"
     except PermissionError:
         return f"错误：没有写入权限: {file_path}"
