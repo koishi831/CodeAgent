@@ -43,3 +43,38 @@ def print_billing(input_tokens: int, output_tokens: int, cached_tokens: int, tot
     console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out , cache {cached_ratio:.1f}%(¥{cost:.4f})[/dim]")
     console.print(f"[dim]累计 Tokens: {total_usage['input_tokens']} in / {total_usage['output_tokens']} out , cache {total_cached_ratio:.1f}%(¥{total_cost:.4f})[/dim]")
 
+
+# ─── 工具图标和摘要 ─────────────────────────────────────────
+
+_TOOL_ICONS = {
+    "read_file": "📖",
+    "write_file": "✏️",
+    "edit_file": "🔧",
+    "list_files": "📁",
+    "grep_search": "🔍",
+    "run_shell": "💻",
+}
+
+def _get_tool_icon(name: str) -> str:
+    return _TOOL_ICONS.get(name, "🔨")
+
+_tool_result_max_length: int = 300
+
+def print_tool_start(name: str, arguments: dict) -> None:
+    icon = _get_tool_icon(name)
+    args_str = ", ".join(f"{k}={repr(v)}" for k, v in arguments.items())
+    console.print(f"\n{icon} [bold cyan]{name}[/bold cyan]({args_str})")
+
+def print_tool_result(result: str, max_length: int | None = None) -> None:
+    if max_length is None:
+        max_length = _tool_result_max_length
+    console.print(f"[dim]{'─' * 30}[/dim]")
+    if len(result) > max_length:
+        console.print(result[:max_length] + f"\n[dim]... (共 {len(result)} 字符)[/dim]")
+    else:
+        console.print(result)
+
+def set_tool_result_max_length(length: int) -> None:
+    global _tool_result_max_length
+    _tool_result_max_length = length
+    

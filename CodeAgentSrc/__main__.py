@@ -32,11 +32,11 @@ def run_repl(agent: Agent) -> None:
         try:
             content = input()
         except (KeyboardInterrupt, EOFError):
-            print("\n\n退出程序")
+            print("退出程序\n")
             break
         content = content.strip()
         if content == "exit":
-            print("\n\n退出程序")
+            print("退出程序\n")
             break
         if not content:
             continue

@@ -1,0 +1,342 @@
+import re
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+import html as html_module
+from pathlib import Path
+
+_RE_SCRIPT = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL)
+_RE_STYLE = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL)
+_RE_TAG = re.compile(r"<[^>]+>")
+_RE_WHITESPACE = re.compile(r"\s+")
+
+_IGNORE_DIRS = {".git", ".svn", ".hg", "__pycache__", ".pytest_cache", ".mypy_cache", ".venv", "venv", "node_modules", ".idea", ".vscode", "build", "dist", ".eggs"}
+_IGNORE_EXTS = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".jpg", ".png", ".gif", ".ico", ".zip", ".tar", ".gz", ".DS_Store", "Thumbs.db"}
+_FILE_ENCODINGS = ["utf-8", "gbk", "gb2312", "latin-1"]
+
+tool_definitions: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file. Returns the file content with line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "The path to the file to read"},
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "The path to the file to write"},
+                    "content": {"type": "string", "description": "The content to write to the file"},
+                },
+                "required": ["file_path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Edit a file by replacing an exact string match with new content. The old_string must match exactly (including whitespace and indentation).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "The path to the file to edit"},
+                    "old_string": {"type": "string", "description": "The exact string to find and replace"},
+                    "new_string": {"type": "string", "description": "The string to replace it with"},
+                },
+                "required": ["file_path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files matching a glob pattern. Returns matching file paths.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": 'Glob pattern to match files (e.g., "**/*.ts", "src/**/*")'},
+                    "path": {"type": "string", "description": "Base directory to search from. Defaults to current directory."},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep_search",
+            "description": "Search for a pattern in files. Returns matching lines with file paths and line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "The regex pattern to search for"},
+                    "path": {"type": "string", "description": "Directory or file to search in. Defaults to current directory."},
+                    "include": {"type": "string", "description": 'File glob pattern to include (e.g., "*.ts", "*.py")'},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell",
+            "description": "Execute a shell command and return its output. Use this for running tests, installing packages, git operations, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to execute"},
+                    "timeout": {"type": "number", "description": "Timeout in milliseconds (default: 30000)"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return its content as text. For HTML pages, tags are stripped to return readable text. For JSON/text responses, content is returned directly.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The URL to fetch"},
+                    "max_length": {"type": "number", "description": "Maximum content length in characters (default 50000)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+]
+
+
+_opened_files: set[str] = set()
+
+
+def _read_file(arguments: dict) -> str:
+    global _opened_files
+    file_path = arguments.get("file_path")
+    if not file_path:
+        return "错误：缺少必需参数 file_path"
+    try:
+        lines = []
+        with open(file_path, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f, 1):
+                lines.append(f"{i:4d}| {line}")
+        content = "".join(lines)
+        _opened_files.add(file_path)
+        return content if content else "(空文件)"
+    except FileNotFoundError:
+        return f"错误：文件不存在: {file_path}"
+    except PermissionError:
+        return f"错误：没有读取权限: {file_path}"
+    except OSError as e:
+        return f"错误：读取文件失败: {e}"
+
+
+def _write_file(arguments: dict) -> str:
+    global _opened_files
+    file_path = arguments.get("file_path")
+    content = arguments.get("content")
+    if not file_path:
+        return "错误：缺少必需参数 file_path"
+    if content is None:
+        return "错误：缺少必需参数 content"
+    if file_path not in _opened_files:
+        return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"成功写入文件: {file_path}"
+    except PermissionError:
+        return f"错误：没有写入权限: {file_path}"
+    except OSError as e:
+        return f"错误：写入文件失败: {e}"
+
+
+def _edit_file(arguments: dict) -> str:
+    global _opened_files
+    file_path = arguments.get("file_path")
+    old_string = arguments.get("old_string")
+    new_string = arguments.get("new_string")
+    if not file_path:
+        return "错误：缺少必需参数 file_path"
+    if old_string is None:
+        return "错误：缺少必需参数 old_string"
+    if new_string is None:
+        return "错误：缺少必需参数 new_string"
+    if file_path not in _opened_files:
+        return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        count = content.count(old_string)
+        if count == 0:
+            return f"错误：未找到匹配的字符串 \"{old_string}\"，请检查参数是否正确"
+        if count > 1:
+            return f"错误：找到 {count} 处匹配 \"{old_string}\"，请提供更唯一的匹配点（需包含更多上下文）"
+        new_content = content.replace(old_string, new_string, 1)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        return f"成功编辑文件: {file_path}"
+    except PermissionError:
+        return f"错误：没有写入权限: {file_path}"
+    except OSError as e:
+        return f"错误：编辑文件失败: {e}"
+
+
+def _list_files(arguments: dict) -> str:
+    pattern = arguments.get("pattern")
+    path = arguments.get("path", ".")
+    if not pattern:
+        return "错误：缺少必需参数 pattern"
+    try:
+        matches = list(Path(path).glob(pattern))
+        if not matches:
+            return "(无匹配文件)"
+        return "\n".join(str(m) for m in matches)
+    except PermissionError:
+        return f"错误：没有访问权限: {path}"
+    except OSError as e:
+        return f"错误：搜索文件失败: {e}"
+
+
+def _grep_search(arguments: dict) -> str:
+    pattern = arguments.get("pattern")
+    path = arguments.get("path", ".")
+    include = arguments.get("include")
+    if not pattern:
+        return "错误：缺少必需参数 pattern"
+    try:
+        regex = re.compile(pattern)
+        matches = []
+        for file_path in Path(path).rglob(include or "*"):
+            if not file_path.is_file():
+                continue
+            if any(part in _IGNORE_DIRS for part in file_path.parts):
+                continue
+            if file_path.suffix.lower() in _IGNORE_EXTS:
+                continue
+            try:
+                with open(file_path, "rb") as f:
+                    header = f.read(1024)
+                if b"\x00" in header:
+                    continue
+            except PermissionError:
+                continue
+            content = None
+            for enc in _FILE_ENCODINGS:
+                try:
+                    with open(file_path, "r", encoding=enc) as f:
+                        content = f.read()
+                    break
+                except (UnicodeDecodeError, LookupError, PermissionError):
+                    continue
+            if content is None:
+                continue
+            for i, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    matches.append(f"{file_path}:{i}: {line.rstrip()}")
+        return "\n".join(matches) if matches else "(无匹配)"
+    except re.error as e:
+        return f"错误：正则表达式无效: {e}"
+    except OSError as e:
+        return f"错误：搜索失败: {e}"
+
+
+def _run_shell(arguments: dict) -> str:
+    command = arguments.get("command")
+    timeout_ms = arguments.get("timeout", 30000)
+    if not command:
+        return "错误：缺少必需参数 command"
+    timeout_sec = timeout_ms / 1000
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec
+        )
+        parts = []
+        if result.stdout:
+            parts.append(result.stdout)
+        if result.stderr:
+            parts.append(f"[STDERR]\n{result.stderr}")
+        return "\n".join(parts) if parts else "(无输出)"
+    except subprocess.TimeoutExpired:
+        return f"错误：命令执行超时 ({timeout_sec:.1f}秒)"
+    except OSError as e:
+        return f"错误：命令执行失败: {e}"
+
+
+def _web_fetch(arguments: dict) -> str:
+    url = arguments.get("url")
+    max_length = arguments.get("max_length", 50000)
+    if not url:
+        return "错误：缺少必需参数 url"
+    try:
+        parsed = urllib.parse.urlparse(url)
+        encoded_path = urllib.parse.quote(parsed.path, safe="/:")
+        encoded_query = urllib.parse.quote(parsed.query, safe="&=")
+        encoded_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, encoded_path, parsed.params, encoded_query, parsed.fragment))
+        req = urllib.request.Request(encoded_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text" not in content_type and "json" not in content_type and "xml" not in content_type:
+                return f"错误：Content-Type ({content_type}) 不是文本类型"
+            charset = response.headers.get_content_charset()
+            content = response.read()
+            if charset:
+                content = content.decode(charset, errors="replace")
+            else:
+                content = content.decode("utf-8", errors="replace")
+        content = content[:max_length]
+        try:
+            content = html_module.unescape(content)
+        except (html_module.HTMLParseError, ValueError):
+            pass
+        content = _RE_SCRIPT.sub("", content)
+        content = _RE_STYLE.sub("", content)
+        content = _RE_TAG.sub("", content)
+        content = _RE_WHITESPACE.sub(" ", content).strip()
+        return content if content else "(无内容)"
+    except urllib.error.URLError as e:
+        return f"错误：网络请求失败: {e}"
+    except TimeoutError:
+        return "错误：请求超时"
+    except OSError as e:
+        return f"错误：获取网页失败: {e}"
+
+
+_TOOL_IMPLEMENTATIONS = {
+    "read_file": _read_file,
+    "write_file": _write_file,
+    "edit_file": _edit_file,
+    "list_files": _list_files,
+    "grep_search": _grep_search,
+    "run_shell": _run_shell,
+    "web_fetch": _web_fetch,
+}
+
+
+def execute_tool(tool_name: str, arguments: dict) -> str:
+    impl = _TOOL_IMPLEMENTATIONS.get(tool_name)
+    if not impl:
+        return f"错误：未知工具: {tool_name}"
+    return impl(arguments)
