@@ -338,8 +338,38 @@ _TOOL_IMPLEMENTATIONS = {
 }
 
 
+DANGEROUS_PATTERNS = [
+    re.compile(r"\brm\s"),
+    re.compile(r"\bgit\s+(push|reset|clean|checkout\s+\.)"),
+    re.compile(r"\bsudo\b"),
+    re.compile(r"\bmkfs\b"),
+    re.compile(r"\bdd\s"),
+    re.compile(r">\s*/dev/"),
+    re.compile(r"\bkill\b"),
+    re.compile(r"\bpkill\b"),
+    re.compile(r"\breboot\b"),
+    re.compile(r"\bshutdown\b"),
+    re.compile(r"\bdel\s", re.IGNORECASE),
+    re.compile(r"\brmdir\s", re.IGNORECASE),
+    re.compile(r"\bformat\s", re.IGNORECASE),
+    re.compile(r"\btaskkill\s", re.IGNORECASE),
+    re.compile(r"\bRemove-Item\s", re.IGNORECASE),
+    re.compile(r"\bStop-Process\s", re.IGNORECASE),
+]
+
+
 def execute_tool(tool_name: str, arguments: dict) -> str:
     impl = _TOOL_IMPLEMENTATIONS.get(tool_name)
     if not impl:
         return f"错误：未知工具: {tool_name}"
     return impl(arguments)
+
+
+def check_permission(tool_name: str, arguments: dict) -> tuple[bool, str]:
+    if tool_name != "run_shell":
+        return (False, "")
+    command = arguments.get("command", "")
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern.search(command):
+            return (True, f"危险命令检测: {pattern.pattern} 匹配到命令: {command[:100]}")
+    return (False, "")

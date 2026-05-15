@@ -77,4 +77,17 @@ def print_tool_result(result: str, max_length: int | None = None) -> None:
 def set_tool_result_max_length(length: int) -> None:
     global _tool_result_max_length
     _tool_result_max_length = length
+
+def ask_dangerous_confirmation(reason: str) -> bool:
+    console.print(f"\n[bold yellow]⚠️ 危险操作警告[/bold yellow]")
+    console.print(f"[yellow]{reason}[/yellow]")
+    console.print("[yellow]是否继续执行？输入 'y' 确认，或 'n' 取消[/yellow] ")
+    while True:
+        response = input("> ").strip().lower()
+        if response == "y":
+            return True
+        elif response == "n":
+            return False
+        else:
+            console.print("[yellow]请输入 'y' 确认或 'n' 取消[/yellow] ")
     

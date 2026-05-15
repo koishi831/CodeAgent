@@ -82,9 +82,9 @@ import os
 from datetime import date
 from pathlib import Path
 
-def render_system_prompt():
+def build_system_prompt():
     template = SYSTEM_PROMPT_TEMPLATE
-    template = template.replace("{{cwd}}", str(Path.cwd()))
+    template = template.replace("{{cwd}}", str(Path.cwd() / "AIWork"))
     template = template.replace("{{date}}", str(date.today().isoformat()))
     template = template.replace("{{platform}}", f"{platform.system()} {platform.machine()}")
     template = template.replace("{{shell}}", os.environ.get("ComSpec"))
