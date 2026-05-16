@@ -49,6 +49,118 @@ def _retry_with_backoff(func, *args, max_retries=3, **kwargs):
     raise last_exception
 
 
+def _estimate_single_message(msg: dict) -> int:
+    tokens = 4  # 系统提示词+角色
+    if msg.get("content"):
+        content = msg["content"]
+        tokens += int(len(content) * 0.8)
+    if msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            tokens += 8
+            tokens += int(len(tc.get("function", {}).get("name", "")) * 0.5)
+            tokens += int(len(tc.get("function", {}).get("arguments", "")) * 0.7)
+    if msg.get("tool_call_id"):
+        tokens += 6
+    return tokens
+
+
+def _estimate_tokens(messages: list, system_prompt_tokens: int = None) -> int:
+    tokens = 0
+    for msg in messages:
+        if system_prompt_tokens is not None and msg.get("role") == "system":
+            tokens += system_prompt_tokens
+            continue
+        tokens += _estimate_single_message(msg)
+    return tokens
+
+
+def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
+    result = []
+    # 保留系统提示词
+    for msg in messages:
+        if msg.get("role") == "system":
+            result.append(msg)
+            break
+    if not result:
+        result = []
+
+    # 跟踪工具调用和结果
+    tool_call_map = {}  # tool_call_id -> 对应的assistant消息
+    tool_result_map = {}  # tool_call_id -> 对应的tool消息
+    read_file_map = {}  # file_path -> 对应的(tool_call_id, index)
+    grep_search_ids = []  # 所有grep_search的id，按时间顺序
+    list_files_ids = []  # 所有list_files的id，按时间顺序
+    run_shell_ids = []  # 所有run_shell的id，按时间顺序
+    recent_tool_ids = []  # 最近3个tool_result的id
+
+    i = len(result)
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            for tc in msg["tool_calls"]:
+                tc_id = tc["id"]
+                tool_call_map[tc_id] = msg
+                tool_name = tc["function"]["name"]
+                args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                if tool_name == "read_file" and "file_path" in args:
+                    read_file_map[args["file_path"]] = tc_id
+                elif tool_name == "grep_search":
+                    grep_search_ids.append(tc_id)
+                elif tool_name == "list_files":
+                    list_files_ids.append(tc_id)
+                elif tool_name == "run_shell":
+                    run_shell_ids.append(tc_id)
+            i += 1
+        elif msg.get("role") == "tool":
+            tc_id = msg["tool_call_id"]
+            tool_result_map[tc_id] = msg
+            recent_tool_ids.append(tc_id)
+            i += 1
+        else:
+            i += 1
+
+    # 规则3：最近3个tool_result要保留，此规则最优先
+    keep_ids = set(recent_tool_ids[-3:])
+
+    # 规则1：同一文件被read_file多次读取只保留最新一次
+    for tc_id in read_file_map.values():
+        if tc_id not in keep_ids:
+            keep_ids.add(tc_id)
+
+    # 规则2："grep_search", "list_files", "run_shell"工具的同类搜索结果保留最新3个
+    keep_ids.update(grep_search_ids[-3:])
+    keep_ids.update(list_files_ids[-3:])
+    keep_ids.update(run_shell_ids[-3:])
+
+    # 重新构建消息列表
+    final_result = result.copy()
+    i = len(result)
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            # 只保留需要的tool_call
+            filtered_tool_calls = [tc for tc in msg["tool_calls"] if tc["id"] in keep_ids]
+            if filtered_tool_calls:
+                filtered_msg = msg.copy()
+                filtered_msg["tool_calls"] = filtered_tool_calls
+                final_result.append(filtered_msg)
+                i += 1
+            else:
+                # 没有需要保留的tool_call，跳过此assistant消息
+                i += 1
+        elif msg.get("role") == "tool":
+            if msg["tool_call_id"] in keep_ids:
+                final_result.append(msg)
+            i += 1
+        else:
+            # 其他消息保留
+            final_result.append(msg)
+            i += 1
+
+    token_count = _estimate_tokens(final_result, system_prompt_tokens)
+    return final_result, token_count
+
+
 class Agent:
     def __init__(self, model: str, api_base: str, api_key: str):
         self.model = model
@@ -66,9 +178,109 @@ class Agent:
             "cached_tokens": 0,
         }
         self._interrupted = False
+        # 缓存系统提示词token，系统提示词不会压缩，不用每次都算
+        self._system_prompt_tokens = _estimate_single_message(self.messages[0])
+        self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
 
     def abort(self) -> None:
         self._interrupted = True
+
+    def _compress_context(self, messages: list) -> tuple:
+        # 总消息小于5条时直接return
+        if len(messages) < 5:
+            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+        
+        # 找到系统提示词
+        system_msg = None
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_msg = msg
+                break
+        
+        # 找到最新用户消息
+        last_user_msg = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user_msg = messages[i]
+                break
+        
+        if not system_msg or not last_user_msg:
+            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+        
+        # 找到至少2轮对话（包含最新用户消息）
+        dialog_history = []
+        user_count = 0
+        i = len(messages) - 1
+        while i >= 0 and user_count < 2:
+            msg = messages[i]
+            dialog_history.insert(0, msg)
+            if msg.get("role") == "user":
+                user_count += 1
+            i -= 1
+        
+        # 准备待压缩的历史（去掉系统提示词和dialog_history）
+        history_to_compress = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "system":
+                i += 1
+                continue
+            # 检查是否在dialog_history中
+            found = False
+            for dm in dialog_history:
+                if dm == msg:
+                    found = True
+                    break
+            if not found:
+                history_to_compress.append(msg)
+            i += 1
+        
+        if not history_to_compress:
+            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+        
+        # 调用大模型总结历史
+        summary_prompt = """请将以下对话历史总结为简洁的摘要，保持关键信息，删除冗余内容：
+
+"""
+        for msg in history_to_compress:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "tool":
+                summary_prompt += f"[工具结果] {content}\n\n"
+            elif role == "assistant":
+                summary_prompt += f"助手: {content}\n\n"
+            else:
+                summary_prompt += f"用户: {content}\n\n"
+        
+        summary_prompt += "\n请用简洁的中文总结以上对话内容。"
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个对话摘要助手，擅长用简洁的语言总结对话历史。"},
+                    {"role": "user", "content": summary_prompt}
+                ],
+                stream=False
+            )
+            summary = response.choices[0].message.content
+        except Exception as e:
+            summary = "[历史对话摘要失败，保留原对话]"
+        
+        # 构建新消息列表
+        new_messages = [system_msg]
+        
+        # 添加摘要消息（作为系统消息的补充）
+        new_messages.append({
+            "role": "system",
+            "content": f"以下是对话历史摘要：\n{summary}"
+        })
+        
+        # 添加至少2轮对话
+        new_messages.extend(dialog_history)
+        
+        return new_messages, _estimate_tokens(new_messages, self._system_prompt_tokens)
 
     def chat(self, user_message: str) -> None:
         if user_message:
@@ -78,9 +290,21 @@ class Agent:
             })
         self._interrupted = False
 
+        # 估算当前token数
+        current_tokens = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        trimmed_messages = self.messages
+        # 当effective_window使用率大于40%时才调用_trim_context
+        if current_tokens > self.effective_window * 0.4:
+            trimmed_messages, self._last_token_count = _trim_context(self.messages, self._system_prompt_tokens)
+            # 如果_trim_context后使用率还大于50%，调用_compress_context
+            if self._last_token_count > self.effective_window * 0.5:
+                trimmed_messages, self._last_token_count = self._compress_context(trimmed_messages)
+        else:
+            self._last_token_count = current_tokens
+
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=self.messages,
+            messages=trimmed_messages,
             tools=tool_definitions,
             stream=True
         )
@@ -120,6 +344,9 @@ class Agent:
                 input_tokens = chunk.usage.prompt_tokens or 0
                 output_tokens = chunk.usage.completion_tokens or 0
                 cached_tokens = (chunk.usage.prompt_tokens_details.cache_read if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details and hasattr(chunk.usage.prompt_tokens_details, 'cache_read') else 0) or 0
+                # 使用实际的input_tokens更新记录
+                if input_tokens > 0:
+                    self._last_token_count = input_tokens
 
         if tool_calls:
             self.messages.append({
