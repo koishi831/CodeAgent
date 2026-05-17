@@ -78,10 +78,9 @@ def _parse_memory_file(file_path: Path) -> Optional[Dict]:
     except Exception:
         return None
 
-def _generate_index() -> str:
-    """生成记忆索引内容"""
+def _regenerate_index() -> str:
+    """重新生成记忆索引内容（扫描所有记忆文件）"""
     memory_dir = get_memory_dir()
-    index_file = memory_dir / "MEMORY.md"
     
     memories: List[Dict] = []
     
@@ -103,11 +102,31 @@ def _generate_index() -> str:
     
     return index_text
 
+
+def _generate_index() -> str:
+    """获取记忆索引内容（优先读取 MEMORY.md）"""
+    memory_dir = get_memory_dir()
+    index_file = memory_dir / "MEMORY.md"
+    
+    # 优先读取已有的 MEMORY.md
+    if index_file.exists():
+        try:
+            with open(index_file, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            pass
+    
+    # 如果读取失败或文件不存在，重新生成并保存
+    index_content = _regenerate_index()
+    with open(index_file, "w", encoding="utf-8") as f:
+        f.write(index_content)
+    return index_content
+
 def update_memory_index(new_file_path: Optional[Path] = None) -> None:
     """更新 MEMORY.md 索引文件"""
     memory_dir = get_memory_dir()
     index_file = memory_dir / "MEMORY.md"
-    index_content = _generate_index()
+    index_content = _regenerate_index()
     
     with open(index_file, "w", encoding="utf-8") as f:
         f.write(index_content)
