@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 import html as html_module
 from pathlib import Path
+from .memory import get_memory_dir, update_memory_index
 
 _RE_SCRIPT = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL)
 _RE_STYLE = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL)
@@ -164,6 +165,18 @@ def _write_file(arguments: dict) -> str:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         _opened_files.add(file_path)
+        
+        # 检测是否写入记忆目录
+        memory_dir = get_memory_dir()
+        file_path_obj = Path(file_path)
+        try:
+            file_path_obj.relative_to(memory_dir)
+            # 是记忆文件，更新索引
+            update_memory_index()
+        except ValueError:
+            # 不是记忆目录下的文件
+            pass
+        
         return f"成功写入文件: {file_path}"
     except PermissionError:
         return f"错误：没有写入权限: {file_path}"
@@ -196,6 +209,18 @@ def _edit_file(arguments: dict) -> str:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
         _opened_files.add(file_path)
+        
+        # 检测是否编辑记忆文件，是则更新索引
+        memory_dir = get_memory_dir()
+        file_path_obj = Path(file_path)
+        try:
+            file_path_obj.relative_to(memory_dir)
+            # 是记忆文件，更新索引
+            update_memory_index()
+        except ValueError:
+            # 不是记忆目录下的文件
+            pass
+        
         return f"成功编辑文件: {file_path}"
     except PermissionError:
         return f"错误：没有写入权限: {file_path}"
@@ -281,6 +306,17 @@ def _run_shell(arguments: dict) -> str:
             parts.append(result.stdout)
         if result.stderr:
             parts.append(f"[STDERR]\n{result.stderr}")
+        
+        # 检测是否删除了记忆文件，是则更新 MEMORY.md
+        memory_dir = get_memory_dir()
+        command_lower = command.lower()
+        delete_patterns = [r"\brm\s", r"\bdel\s", r"\bRemove-Item\s", r"\brmdir\s"]
+        is_delete = any(re.search(pattern, command_lower) for pattern in delete_patterns)
+        if is_delete:
+            # 检查命令是否包含记忆目录路径
+            if str(memory_dir).lower() in command_lower:
+                update_memory_index()
+        
         return "\n".join(parts) if parts else "(无输出)"
     except subprocess.TimeoutExpired:
         return f"错误：命令执行超时 ({timeout_sec:.1f}秒)"
@@ -369,6 +405,13 @@ def check_permission(tool_name: str, arguments: dict) -> tuple[bool, str]:
     if tool_name != "run_shell":
         return (False, "")
     command = arguments.get("command", "")
+    command_lower = command.lower()
+    
+    # 检查是否操作 .codeagent 目录
+    codeagent_path = Path(__file__).parent / ".codeagent"
+    if str(codeagent_path).lower() in command_lower:
+        return (False, "")
+    
     for pattern in DANGEROUS_PATTERNS:
         if pattern.search(command):
             return (True, f"危险命令检测: {pattern.pattern} 匹配到命令: {command[:100]}")

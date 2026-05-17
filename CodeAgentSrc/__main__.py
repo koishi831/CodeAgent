@@ -56,6 +56,8 @@ def main() -> None:
         model=os.environ.get("OPENAI_MODEL_ID"),
         api_base=os.environ.get("OPENAI_BASE_URL"),
         api_key=os.environ.get("OPENAI_API_KEY"),
+        thinking="enabled",  # DeepSeek 思考模式：enabled/disabled
+        reasoning_effort="high",  # 思考强度：high/max
     )
     run_repl(agent)
 

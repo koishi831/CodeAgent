@@ -54,6 +54,9 @@ def _estimate_single_message(msg: dict) -> int:
     if msg.get("content"):
         content = msg["content"]
         tokens += int(len(content) * 0.8)
+    if msg.get("reasoning_content"):
+        reasoning = msg["reasoning_content"]
+        tokens += int(len(reasoning) * 0.8)
     if msg.get("tool_calls"):
         for tc in msg["tool_calls"]:
             tokens += 8
@@ -143,6 +146,9 @@ def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
             if filtered_tool_calls:
                 filtered_msg = msg.copy()
                 filtered_msg["tool_calls"] = filtered_tool_calls
+                # 确保 reasoning_content 也被保留
+                if "reasoning_content" in msg:
+                    filtered_msg["reasoning_content"] = msg["reasoning_content"]
                 final_result.append(filtered_msg)
                 i += 1
             else:
@@ -162,12 +168,14 @@ def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
 
 
 class Agent:
-    def __init__(self, model: str, api_base: str, api_key: str):
+    def __init__(self, model: str, api_base: str, api_key: str, thinking: str = "enabled", reasoning_effort: str = "high"):
         self.model = model
         self.client = OpenAI(
             api_key=api_key,
             base_url=api_base
         )
+        self.thinking = thinking
+        self.reasoning_effort = reasoning_effort
         self.messages = [
             {"role": "system", "content": build_system_prompt()}
         ]
@@ -302,15 +310,24 @@ class Agent:
         else:
             self._last_token_count = current_tokens
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=trimmed_messages,
-            tools=tool_definitions,
-            stream=True
-        )
+        # 构建 API 调用参数
+        api_kwargs = {
+            "model": self.model,
+            "messages": trimmed_messages,
+            "tools": tool_definitions,
+            "stream": True
+        }
+        
+        # 如果是 DeepSeek 模型，添加思考模式配置
+        if "deepseek" in self.model.lower():
+            api_kwargs["extra_body"] = {"thinking": {"type": self.thinking}}
+            api_kwargs["reasoning_effort"] = self.reasoning_effort
+        
+        response = self.client.chat.completions.create(**api_kwargs)
 
         print_assistant_start()
         assistant_message = ""
+        reasoning_content = ""  # 新增：保存思考内容
         output_tokens = 0
         input_tokens = 0
         cached_tokens = 0
@@ -321,6 +338,10 @@ class Agent:
             if self._interrupted:
                 print_abort()
                 return
+            # 处理 reasoning_content (思考内容)
+            if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                reasoning_content += chunk.choices[0].delta.reasoning_content
+                # 可以选择打印思考内容，这里暂时不打印
             if chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
                 assistant_message += content
@@ -349,7 +370,7 @@ class Agent:
                     self._last_token_count = input_tokens
 
         if tool_calls:
-            self.messages.append({
+            assistant_msg = {
                 "role": "assistant",
                 "content": assistant_message if assistant_message else None,
                 "tool_calls": [{
@@ -360,7 +381,11 @@ class Agent:
                         "arguments": tc["function"]["arguments"]
                     }
                 } for tc in tool_calls]
-            })
+            }
+            # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
+            if reasoning_content:
+                assistant_msg["reasoning_content"] = reasoning_content
+            self.messages.append(assistant_msg)
             for tc in tool_calls:
                 try:
                     args = json.loads(tc["function"]["arguments"])
@@ -387,10 +412,14 @@ class Agent:
             self.chat("")  # Continue conversation with tool results
             return
 
-        self.messages.append({
+        # 保存没有 tool calls 的消息，也需要包含 reasoning_content
+        final_assistant_msg = {
             "role": "assistant",
             "content": assistant_message
-        })
+        }
+        if reasoning_content:
+            final_assistant_msg["reasoning_content"] = reasoning_content
+        self.messages.append(final_assistant_msg)
 
         self.total_usage["input_tokens"] += input_tokens
         self.total_usage["output_tokens"] += output_tokens
