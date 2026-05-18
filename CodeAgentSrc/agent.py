@@ -187,7 +187,23 @@ class Agent:
         self._interrupted = False
         # 缓存系统提示词token，系统提示词不会压缩，不用每次都算
         self._system_prompt_tokens = _estimate_single_message(self.messages[0])
+
+    def clear_history(self):
+        """清空对话历史，保留系统提示词"""
+        self.messages = [{"role": "system", "content": build_system_prompt()}]
+        self._interrupted = False
+
+    def get_total_usage(self):
+        """获取总消费 token 统计"""
+        return self.total_usage.copy()
+
+    def compact_context(self):
+        """压缩对话上下文"""
+        if len(self.messages) < 5:
+            return None, _estimate_tokens(self.messages, self._system_prompt_tokens)
+        self.messages, _ = self._compress_context(self.messages)
         self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        return self.messages, self._last_token_count
 
     def abort(self) -> None:
         self._interrupted = True

@@ -6,7 +6,11 @@ import signal
 from dotenv import load_dotenv
 
 from .agent import Agent
-from .ui import print_abort, print_divider, print_error, print_user_prompt, print_welcome
+from .memory import get_memory_dir
+from .ui import (
+    print_abort, print_divider, print_error, print_user_prompt, print_welcome,
+    print_message, print_total_usage, print_memory_content
+)
 
 
 def load_env():
@@ -35,10 +39,39 @@ def run_repl(agent: Agent) -> None:
             print("退出程序\n")
             break
         content = content.strip()
-        if content == "exit":
+        if not content:
+            continue
+
+        # 处理 REPL 命令
+        if content == "/exit":
             print("退出程序\n")
             break
-        if not content:
+        elif content == "/clear":
+            agent.clear_history()
+            print_message("\n对话历史已清空", style="green")
+            print_divider()
+            continue
+        elif content == "/cost":
+            usage = agent.get_total_usage()
+            print_total_usage(usage)
+            print_divider()
+            continue
+        elif content == "/compact":
+            messages, token_count = agent.compact_context()
+            if messages is None:
+                print_message("\n对话太短，无需压缩", style="yellow")
+            else:
+                print_message(f"\n对话已压缩，当前 Token: {token_count}", style="green")
+            print_divider()
+            continue
+        elif content == "/memory":
+            memory_path = get_memory_dir() / "MEMORY.md"
+            if memory_path.exists():
+                with open(memory_path, 'r', encoding='utf-8') as f:
+                    print_memory_content(f.read())
+            else:
+                print_message("\n暂无记忆", style="yellow")
+            print_divider()
             continue
 
         try:
@@ -63,3 +96,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

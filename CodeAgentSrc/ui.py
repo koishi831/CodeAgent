@@ -7,7 +7,7 @@ console = Console(highlight=False)
 
 def print_welcome() -> None:
     console.print("\n[bold cyan]CodeAgent助手[/bold cyan]\n")
-    console.print("[dim]'exit' 退出[/dim]")
+    console.print("[dim] 命令: /exit /clear /cost /compact /memory [/dim]\n")
 
 
 def print_user_prompt() -> None:
@@ -38,6 +38,34 @@ def print_assistant_content(content: str) -> None:
     sys.stdout.write(content)
     sys.stdout.flush()
 
+def print_message(text: str, style: str = "") -> None:
+    """通用打印函数，传入文本和颜色样式"""
+    if style:
+        console.print(f"[{style}]{text}[/{style}]")
+    else:
+        console.print(text)
+
+def _calculate_cost(usage: dict) -> tuple[float, float]:
+    """计算成本和缓存比例"""
+    cached_ratio = (usage['cached_tokens'] / usage['input_tokens'] * 100) if usage['input_tokens'] > 0 else 0.0
+    cost = (usage['input_tokens'] * 1.0 + usage['output_tokens'] * 2.0) / 1_000_000 - (usage['cached_tokens'] * 0.98 / 1_000_000)
+    return cost, cached_ratio
+
+def print_total_usage(usage: dict) -> None:
+    """
+    打印简洁的累计 Tokens
+    
+    Args:
+        usage: 消费统计
+    """
+    cost, cached_ratio = _calculate_cost(usage)
+    console.print(f"[dim]累计 Tokens: {usage['input_tokens']} in / {usage['output_tokens']} out , cache {cached_ratio:.1f}%(¥{cost:.4f})[/dim]")
+
+def print_memory_content(content: str) -> None:
+    """打印 MEMORY.md 内容"""
+    console.print(f"\n[bold cyan]MEMORY.md 内容:[/bold cyan]")
+    console.print(content)
+
 PRICING_PER_MILLION = {
     "input_cached": 0.02,
     "input_not_cached": 1.0,
@@ -45,12 +73,14 @@ PRICING_PER_MILLION = {
 }
 
 def print_billing(input_tokens: int, output_tokens: int, cached_tokens: int, total_usage: dict) -> None:
-    cached_ratio = (cached_tokens / input_tokens * 100) if input_tokens > 0 else 0.0
-    cost = (input_tokens * 1.0 + output_tokens * 2.0) / 1_000_000 - (cached_tokens * 0.98 / 1_000_000)
-    total_cost = (total_usage["input_tokens"] * 1.0 + total_usage["output_tokens"] * 2.0) / 1_000_000 - (total_usage["cached_tokens"] * 0.98 / 1_000_000)
-    total_cached_ratio = (total_usage["cached_tokens"] / total_usage["input_tokens"] * 100) if total_usage["input_tokens"] > 0 else 0.0
+    current_usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
+    }
+    cost, cached_ratio = _calculate_cost(current_usage)
     console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out , cache {cached_ratio:.1f}%(¥{cost:.4f})[/dim]")
-    console.print(f"[dim]累计 Tokens: {total_usage['input_tokens']} in / {total_usage['output_tokens']} out , cache {total_cached_ratio:.1f}%(¥{total_cost:.4f})[/dim]")
+    print_total_usage(total_usage)
 
 
 # ─── 工具图标和摘要 ─────────────────────────────────────────
