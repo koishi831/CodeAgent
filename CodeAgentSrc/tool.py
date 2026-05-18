@@ -124,6 +124,22 @@ tool_definitions: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "agent",
+            "description": "Launch a sub agent to handle a task autonomously. Sub agents have isolated context and return their result. Types: 'explore' (read-only), 'plan' (read-only, structured planning), 'general' (full tools).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Short (3-5 word) description of the sub agent's task"},
+                    "prompt": {"type": "string", "description": "Detailed task instructions for the sub agent"},
+                    "type": {"type": "string", "enum": ["explore", "plan", "general"], "description": "Agent type. Default: general"},
+                },
+                "required": ["description", "prompt"],
+            },
+        },
+    },
 ]
 
 
@@ -399,6 +415,20 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
     if not impl:
         return f"错误：未知工具: {tool_name}"
     return impl(arguments)
+
+
+def get_tools_for_agent_type(agent_type: str) -> list[dict]:
+    """根据 agent 类型返回对应的工具集"""
+    if agent_type in ["explore", "plan"]:
+        # explore/plan: 只读工具 (read_file, list_files, grep_search)
+        read_only_tools = ["read_file", "list_files", "grep_search"]
+        return [tool for tool in tool_definitions if tool["function"]["name"] in read_only_tools]
+    elif agent_type == "general":
+        # general: 除 agent 外的所有工具（防止递归）
+        return [tool for tool in tool_definitions if tool["function"]["name"] != "agent"]
+    else:
+        # 默认返回所有工具
+        return tool_definitions
 
 
 def check_permission(tool_name: str, arguments: dict) -> tuple[bool, str]:

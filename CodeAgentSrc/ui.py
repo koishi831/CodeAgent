@@ -22,6 +22,15 @@ def print_error(msg: str) -> None:
 def print_assistant_start() -> None:
     console.print("\n[bold blue]助手:[/bold blue] ", end="")
 
+def print_subagent_start(agent_type: str) -> None:
+    agent_type_names = {
+        "explore": "检索",
+        "plan": "规划",
+        "general": "通用",
+    }
+    name = agent_type_names.get(agent_type, "通用")
+    console.print(f"\n[bold purple]🚀 子Agent({name}):[/bold purple]")
+
 def print_abort() -> None:
     console.print("\n[yellow]用户取消[/yellow]")
         
@@ -53,6 +62,7 @@ _TOOL_ICONS = {
     "list_files": "📁",
     "grep_search": "🔍",
     "run_shell": "💻",
+    "agent": "🚀",
 }
 
 def _get_tool_icon(name: str) -> str:

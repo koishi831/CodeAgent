@@ -2,10 +2,12 @@
 import json
 import time
 import errno
+import os
 from openai import OpenAI
-from .ui import print_abort, print_divider, print_assistant_start, print_assistant_content, print_billing, print_tool_start, print_tool_result, ask_dangerous_confirmation
-from .tool import execute_tool, tool_definitions, check_permission
+from .ui import print_abort, print_divider, print_assistant_start, print_assistant_content, print_billing, print_tool_start, print_tool_result, ask_dangerous_confirmation, print_subagent_start
+from .tool import execute_tool, tool_definitions, check_permission, get_tools_for_agent_type
 from .prompt import build_system_prompt
+from .subagent import build_agent_descriptions, get_prompt_for_agent_type
 
 # 模型上下文窗口大小
 MODEL_CONTEXT = {
@@ -20,34 +22,6 @@ def _get_context_window(model: str) -> int:
 # 重试策略
 RETRYABLE_HTTP_CODES = {429, 503, 529}
 RETRYABLE_ERRORS = {"overloaded", "ECONNRESET", "ETIMEDOUT"}
-
-def _is_retryable_error(error: Exception) -> bool:
-    error_str = str(error).lower()
-    if hasattr(error, 'response') and hasattr(error.response, 'status_code'):
-        if error.response.status_code in RETRYABLE_HTTP_CODES:
-            return True
-    for retryable in RETRYABLE_ERRORS:
-        if retryable.lower() in error_str:
-            return True
-    if hasattr(error, 'errno'):
-        if error.errno in (errno.ECONNRESET, errno.ETIMEDOUT):
-            return True
-    return False
-
-def _retry_with_backoff(func, *args, max_retries=3, **kwargs):
-    last_exception = None
-    for attempt in range(max_retries + 1):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            last_exception = e
-            if attempt < max_retries and _is_retryable_error(e):
-                wait_time = (2 ** attempt) + (time.time() % 1)
-                time.sleep(wait_time)
-                continue
-            raise
-    raise last_exception
-
 
 def _estimate_single_message(msg: dict) -> int:
     tokens = 4  # 系统提示词+角色
@@ -66,7 +40,6 @@ def _estimate_single_message(msg: dict) -> int:
         tokens += 6
     return tokens
 
-
 def _estimate_tokens(messages: list, system_prompt_tokens: int = None) -> int:
     tokens = 0
     for msg in messages:
@@ -75,7 +48,6 @@ def _estimate_tokens(messages: list, system_prompt_tokens: int = None) -> int:
             continue
         tokens += _estimate_single_message(msg)
     return tokens
-
 
 def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
     result = []
@@ -166,6 +138,33 @@ def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
     token_count = _estimate_tokens(final_result, system_prompt_tokens)
     return final_result, token_count
 
+def _is_retryable_error(error: Exception) -> bool:
+    error_str = str(error).lower()
+    if hasattr(error, 'response') and hasattr(error.response, 'status_code'):
+        if error.response.status_code in RETRYABLE_HTTP_CODES:
+            return True
+    for retryable in RETRYABLE_ERRORS:
+        if retryable.lower() in error_str:
+            return True
+    if hasattr(error, 'errno'):
+        if error.errno in (errno.ECONNRESET, errno.ETIMEDOUT):
+            return True
+    return False
+
+def _retry_with_backoff(func, *args, max_retries=3, **kwargs):
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries and _is_retryable_error(e):
+                wait_time = (2 ** attempt) + (time.time() % 1)
+                time.sleep(wait_time)
+                continue
+            raise
+    raise last_exception
+
 
 class Agent:
     def __init__(self, model: str, api_base: str, api_key: str, thinking: str = "enabled", reasoning_effort: str = "high"):
@@ -192,6 +191,146 @@ class Agent:
 
     def abort(self) -> None:
         self._interrupted = True
+
+    def _execute_tool_call(self, tool_name: str, arguments: dict) -> str:
+        """统一工具调用分发"""
+        if tool_name == "agent":
+            return self._execute_agent_tool(arguments)
+        else:
+            return execute_tool(tool_name, arguments)
+
+    def _execute_agent_tool(self, arguments: dict) -> str:
+        """运行子 agent"""
+        prompt = arguments.get("prompt", "")
+        agent_type = arguments.get("type", "general")
+        
+        if not prompt:
+            return "错误：缺少必需参数 prompt"
+        
+        print_subagent_start(agent_type)
+        
+        # 从环境变量读取配置
+        model = os.environ.get("OPENAI_MODEL_ID")
+        api_base = os.environ.get("OPENAI_BASE_URL")
+        api_key = os.environ.get("OPENAI_API_KEY")
+        
+        if not model or not api_base or not api_key:
+            return "错误：子 agent 配置缺失，请检查环境变量 OPENAI_MODEL_ID、OPENAI_BASE_URL、OPENAI_API_KEY"
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=api_base
+        )
+        
+        system_prompt = get_prompt_for_agent_type(agent_type)
+        tools = get_tools_for_agent_type(agent_type)
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        
+        effective_window = _get_context_window(model)
+        system_prompt_tokens = _estimate_tokens([{"role": "system", "content": system_prompt}])
+        
+        result = ""
+        subagent_total_input = 0
+        subagent_total_output = 0
+        subagent_total_cached = 0
+        
+        def call_api():
+            current_tokens = _estimate_tokens(messages, system_prompt_tokens)
+            trimmed_messages = messages
+            last_token_count = current_tokens
+            # 当effective_window使用率大于40%时才调用_trim_context
+            if current_tokens > effective_window * 0.4:
+                trimmed_messages, last_token_count = _trim_context(messages, system_prompt_tokens)
+            
+            api_kwargs = {
+                "model": model,
+                "messages": trimmed_messages,
+                "tools": tools,
+                "stream": False
+            }
+            
+            if "deepseek" in model.lower():
+                api_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                api_kwargs["reasoning_effort"] = "high"
+            
+            return client.chat.completions.create(**api_kwargs)
+        
+        while True:
+            response = _retry_with_backoff(call_api)
+            message = response.choices[0].message
+            
+            # 统计 token 消耗
+            if hasattr(response, 'usage') and response.usage:
+                input_tokens = response.usage.prompt_tokens or 0
+                output_tokens = response.usage.completion_tokens or 0
+                cached_tokens = (response.usage.prompt_tokens_details.cache_read if hasattr(response.usage, 'prompt_tokens_details') and response.usage.prompt_tokens_details and hasattr(response.usage.prompt_tokens_details, 'cache_read') else 0) or 0
+                subagent_total_input += input_tokens
+                subagent_total_output += output_tokens
+                subagent_total_cached += cached_tokens
+            
+            if message.content:
+                result += message.content
+            
+            tool_calls_dict = []
+            if message.tool_calls:
+                for tc in message.tool_calls:
+                    tool_calls_dict.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    })
+            
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.content if message.content else None,
+                "tool_calls": tool_calls_dict if tool_calls_dict else None
+            }
+            
+            # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
+            if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                assistant_msg["reasoning_content"] = message.reasoning_content
+            
+            messages.append(assistant_msg)
+            
+            if not message.tool_calls:
+                break
+            
+            for tool_call in message.tool_calls:
+                try:
+                    args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+                
+                print_tool_start(tool_call.function.name, args)
+                
+                need_confirm, reason = check_permission(tool_call.function.name, args)
+                if need_confirm:
+                    # 子 agent 不进行危险操作，直接拒绝
+                    tool_result = "危险操作被拒绝"
+                else:
+                    tool_result = _retry_with_backoff(execute_tool, tool_call.function.name, args)
+                
+                print_tool_result(tool_result)
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result
+                })
+        
+        # 把子 agent 的 token 消耗累加到主 agent
+        self.total_usage["input_tokens"] += subagent_total_input
+        self.total_usage["output_tokens"] += subagent_total_output
+        self.total_usage["cached_tokens"] += subagent_total_cached
+        
+        return result or "子 agent 执行完成"
 
     def _compress_context(self, messages: list) -> tuple:
         # 总消息小于5条时直接return
@@ -402,7 +541,7 @@ class Agent:
                             "content": "用户取消执行"
                         })
                         continue
-                tool_result = _retry_with_backoff(execute_tool, tc["function"]["name"], args)
+                tool_result = _retry_with_backoff(self._execute_tool_call, tc["function"]["name"], args)
                 print_tool_result(tool_result)
                 self.messages.append({
                     "role": "tool",

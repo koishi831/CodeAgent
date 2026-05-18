@@ -64,6 +64,11 @@ SYSTEM_PROMPT_TEMPLATE = """\
 
 一句话能说明白，绝不写三句。优先简短陈述句，不用冗长赘述。本条规则不适用于代码块与工具调用内容。
 
+# 子 Agent 系统
+你可以调用 `agent` 工具来启动子 agent 完成特定任务，子 agent 有独立的上下文。
+可用的子 agent 类型：
+{{agent_descriptions}}
+
 # 环境信息
 工作目录: {{cwd}}
 日期: {{date}}
@@ -77,6 +82,7 @@ import os
 from datetime import date
 from pathlib import Path
 from .memory import build_memory_prompt
+from .subagent import build_agent_descriptions
 
 def build_system_prompt():
     template = SYSTEM_PROMPT_TEMPLATE
@@ -85,4 +91,5 @@ def build_system_prompt():
     template = template.replace("{{platform}}", f"{platform.system()} {platform.machine()}")
     template = template.replace("{{shell}}", os.environ.get("ComSpec"))
     template = template.replace("{{memory}}", build_memory_prompt())
+    template = template.replace("{{agent_descriptions}}", build_agent_descriptions())
     return template
