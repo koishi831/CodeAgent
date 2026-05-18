@@ -453,6 +453,11 @@ class Agent:
             })
         self._interrupted = False
 
+        # 保存调用前的累计消耗，用于计算本次消耗
+        prev_total_input = self.total_usage["input_tokens"]
+        prev_total_output = self.total_usage["output_tokens"]
+        prev_total_cached = self.total_usage["cached_tokens"]
+
         # 估算当前token数
         current_tokens = _estimate_tokens(self.messages, self._system_prompt_tokens)
         trimmed_messages = self.messages
@@ -483,9 +488,6 @@ class Agent:
         print_assistant_start()
         assistant_message = ""
         reasoning_content = ""  # 新增：保存思考内容
-        output_tokens = 0
-        input_tokens = 0
-        cached_tokens = 0
         tool_calls = []
         current_tool_call = None
 
@@ -517,12 +519,16 @@ class Agent:
                     else:
                         current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments or ""
             if chunk.usage:
-                input_tokens = chunk.usage.prompt_tokens or 0
-                output_tokens = chunk.usage.completion_tokens or 0
-                cached_tokens = (chunk.usage.prompt_tokens_details.cache_read if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details and hasattr(chunk.usage.prompt_tokens_details, 'cache_read') else 0) or 0
+                chunk_input = chunk.usage.prompt_tokens or 0
+                chunk_output = chunk.usage.completion_tokens or 0
+                chunk_cached = (chunk.usage.prompt_tokens_details.cache_read if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details and hasattr(chunk.usage.prompt_tokens_details, 'cache_read') else 0) or 0
                 # 使用实际的input_tokens更新记录
-                if input_tokens > 0:
-                    self._last_token_count = input_tokens
+                if chunk_input > 0:
+                    self._last_token_count = chunk_input
+                # 及时累加到总消耗
+                self.total_usage["input_tokens"] += chunk_input
+                self.total_usage["output_tokens"] += chunk_output
+                self.total_usage["cached_tokens"] += chunk_cached
 
         if tool_calls:
             assistant_msg = {
@@ -564,7 +570,8 @@ class Agent:
                     "tool_call_id": tc["id"],
                     "content": tool_result
                 })
-            self.chat("")  # Continue conversation with tool results
+            # 继续对话，发送工具结果给模型
+            self.chat("")
             return
 
         # 保存没有 tool calls 的消息，也需要包含 reasoning_content
@@ -576,9 +583,10 @@ class Agent:
             final_assistant_msg["reasoning_content"] = reasoning_content
         self.messages.append(final_assistant_msg)
 
-        self.total_usage["input_tokens"] += input_tokens
-        self.total_usage["output_tokens"] += output_tokens
-        self.total_usage["cached_tokens"] += cached_tokens
+        # 计算本次消耗 = 当前累计 - 调用前累计
+        this_input = self.total_usage["input_tokens"] - prev_total_input
+        this_output = self.total_usage["output_tokens"] - prev_total_output
+        this_cached = self.total_usage["cached_tokens"] - prev_total_cached
 
-        print_billing(input_tokens, output_tokens, cached_tokens, self.total_usage)
+        print_billing(this_input, this_output, this_cached, self.total_usage)
 
