@@ -1,3 +1,17 @@
+"""
+tool.py - 工具系统模块
+======================
+
+本模块定义了 Agent 可用的所有工具及其实现，包括：
+- 文件操作：read_file, write_file, edit_file
+- 文件检索：list_files, grep_search
+- Shell 命令：run_shell
+- 网页获取：web_fetch
+- 子 Agent 调用：agent（实际在 agent.py 中实现）
+
+每个工具都有完整的错误处理和权限检查机制。
+"""
+
 import os
 import re
 import subprocess
@@ -8,15 +22,20 @@ import html as html_module
 from pathlib import Path
 from .memory import get_memory_dir, update_memory_index
 
+
+# HTML 清理相关的正则表达式
 _RE_SCRIPT = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL)
 _RE_STYLE = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL)
 _RE_TAG = re.compile(r"<[^>]+>")
 _RE_WHITESPACE = re.compile(r"\s+")
 
+# 文件搜索时的忽略配置
 _IGNORE_DIRS = {".git", ".svn", ".hg", "__pycache__", ".pytest_cache", ".mypy_cache", ".venv", "venv", "node_modules", ".idea", ".vscode", "build", "dist", ".eggs"}
 _IGNORE_EXTS = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".jpg", ".png", ".gif", ".ico", ".zip", ".tar", ".gz", ".DS_Store", "Thumbs.db"}
 _FILE_ENCODINGS = ["utf-8", "gbk", "gb2312", "latin-1"]
 
+
+# OpenAI Function Calling 格式的工具定义
 tool_definitions: list[dict] = [
     {
         "type": "function",
@@ -144,6 +163,15 @@ tool_definitions: list[dict] = [
 
 
 def _read_file(arguments: dict) -> str:
+    """
+    读取文件内容，返回带行号的格式
+    
+    参数:
+        arguments: 包含 file_path 的字典
+        
+    返回:
+        带行号的文件内容，或错误信息
+    """
     file_path = arguments.get("file_path")
     if not file_path:
         return "错误：缺少必需参数 file_path"
@@ -163,6 +191,17 @@ def _read_file(arguments: dict) -> str:
 
 
 def _write_file(arguments: dict) -> str:
+    """
+    写入文件内容，文件不存在则创建，已存在则覆盖
+    
+    如果写入到记忆目录，会自动更新 MEMORY.md 索引。
+    
+    参数:
+        arguments: 包含 file_path 和 content 的字典
+        
+    返回:
+        成功信息或错误信息
+    """
     file_path = arguments.get("file_path")
     content = arguments.get("content")
     if not file_path:
@@ -192,6 +231,18 @@ def _write_file(arguments: dict) -> str:
 
 
 def _edit_file(arguments: dict) -> str:
+    """
+    编辑文件，通过精确匹配字符串替换内容
+    
+    old_string 必须完全匹配（包括空格和缩进），且只能有一处匹配。
+    如果编辑的是记忆文件，会自动更新 MEMORY.md 索引。
+    
+    参数:
+        arguments: 包含 file_path, old_string, new_string 的字典
+        
+    返回:
+        成功信息或错误信息
+    """
     file_path = arguments.get("file_path")
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
@@ -232,6 +283,15 @@ def _edit_file(arguments: dict) -> str:
 
 
 def _list_files(arguments: dict) -> str:
+    """
+    列出匹配 glob 模式的文件
+    
+    参数:
+        arguments: 包含 pattern 和可选 path 的字典
+        
+    返回:
+        匹配的文件路径列表，或错误信息
+    """
     pattern = arguments.get("pattern")
     path = arguments.get("path", ".")
     if not pattern:
@@ -248,6 +308,17 @@ def _list_files(arguments: dict) -> str:
 
 
 def _grep_search(arguments: dict) -> str:
+    """
+    在文件中搜索正则表达式模式
+    
+    会自动忽略常见的二进制文件和目录，支持多种编码。
+    
+    参数:
+        arguments: 包含 pattern 和可选 path, include 的字典
+        
+    返回:
+        匹配的行（格式：文件名:行号: 内容），或错误信息
+    """
     pattern = arguments.get("pattern")
     path = arguments.get("path", ".")
     include = arguments.get("include")
@@ -291,6 +362,17 @@ def _grep_search(arguments: dict) -> str:
 
 
 def _run_shell(arguments: dict) -> str:
+    """
+    执行 shell 命令并返回输出
+    
+    如果命令可能删除了记忆文件，会自动更新 MEMORY.md 索引。
+    
+    参数:
+        arguments: 包含 command 和可选 timeout 的字典
+        
+    返回:
+        命令输出（stdout + stderr），或错误信息
+    """
     command = arguments.get("command")
     timeout_ms = arguments.get("timeout", 30000)
     if not command:
@@ -328,6 +410,18 @@ def _run_shell(arguments: dict) -> str:
 
 
 def _web_fetch(arguments: dict) -> str:
+    """
+    获取 URL 内容并以文本返回
+    
+    对于 HTML 页面会去除 script、style 和标签，返回可读文本。
+    JSON/文本响应直接返回。
+    
+    参数:
+        arguments: 包含 url 和可选 max_length 的字典
+        
+    返回:
+        网页内容，或错误信息
+    """
     url = arguments.get("url")
     max_length = arguments.get("max_length", 50000)
     if not url:
@@ -366,6 +460,7 @@ def _web_fetch(arguments: dict) -> str:
         return f"错误：获取网页失败: {e}"
 
 
+# 工具实现映射表（agent 工具在 agent.py 中单独处理）
 _TOOL_IMPLEMENTATIONS = {
     "read_file": _read_file,
     "write_file": _write_file,
@@ -377,6 +472,7 @@ _TOOL_IMPLEMENTATIONS = {
 }
 
 
+# 危险命令模式（用于权限检查）
 DANGEROUS_PATTERNS = [
     re.compile(r"\brm\s"),
     re.compile(r"\bgit\s+(push|reset|clean|checkout\s+\.)"),
@@ -398,6 +494,16 @@ DANGEROUS_PATTERNS = [
 
 
 def execute_tool(tool_name: str, arguments: dict) -> str:
+    """
+    执行工具调用
+    
+    参数:
+        tool_name: 工具名称
+        arguments: 工具参数字典
+        
+    返回:
+        工具执行结果字符串
+    """
     impl = _TOOL_IMPLEMENTATIONS.get(tool_name)
     if not impl:
         return f"错误：未知工具: {tool_name}"
@@ -405,7 +511,15 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
 
 
 def get_tools_for_agent_type(agent_type: str) -> list[dict]:
-    """根据 agent 类型返回对应的工具集"""
+    """
+    根据 agent 类型返回对应的工具集
+    
+    参数:
+        agent_type: 子 Agent 类型（"explore" | "plan" | "general"）
+        
+    返回:
+        对应类型可用的工具定义列表
+    """
     if agent_type in ["explore", "plan"]:
         # explore/plan: 只读工具 (read_file, list_files, grep_search)
         read_only_tools = ["read_file", "list_files", "grep_search"]
@@ -419,6 +533,16 @@ def get_tools_for_agent_type(agent_type: str) -> list[dict]:
 
 
 def check_permission(tool_name: str, arguments: dict) -> tuple[bool, str]:
+    """
+    检查工具调用是否需要用户确认（危险命令检测）
+    
+    参数:
+        tool_name: 工具名称
+        arguments: 工具参数字典
+        
+    返回:
+        (是否需要确认, 警告信息) 元组
+    """
     if tool_name != "run_shell":
         return (False, "")
     command = arguments.get("command", "")
