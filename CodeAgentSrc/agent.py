@@ -3,6 +3,7 @@ import json
 import time
 import errno
 import os
+from typing import Dict, List, Optional, Tuple, Any, Callable
 from openai import OpenAI
 from .ui import print_abort, print_divider, print_assistant_start, print_assistant_content, print_billing, print_tool_start, print_tool_result, ask_dangerous_confirmation, print_subagent_start
 from .tool import execute_tool, tool_definitions, check_permission, get_tools_for_agent_type
@@ -23,7 +24,7 @@ def _get_context_window(model: str) -> int:
 RETRYABLE_HTTP_CODES = {429, 503, 529}
 RETRYABLE_ERRORS = {"overloaded", "ECONNRESET", "ETIMEDOUT"}
 
-def _estimate_single_message(msg: dict) -> int:
+def _estimate_single_message(msg: Dict[str, Any]) -> int:
     tokens = 4  # 系统提示词+角色
     if msg.get("content"):
         content = msg["content"]
@@ -40,7 +41,7 @@ def _estimate_single_message(msg: dict) -> int:
         tokens += 6
     return tokens
 
-def _estimate_tokens(messages: list, system_prompt_tokens: int = None) -> int:
+def _estimate_tokens(messages: List[Dict[str, Any]], system_prompt_tokens: Optional[int] = None) -> int:
     tokens = 0
     for msg in messages:
         if system_prompt_tokens is not None and msg.get("role") == "system":
@@ -48,95 +49,6 @@ def _estimate_tokens(messages: list, system_prompt_tokens: int = None) -> int:
             continue
         tokens += _estimate_single_message(msg)
     return tokens
-
-def _trim_context(messages: list, system_prompt_tokens: int = None) -> list:
-    result = []
-    # 保留系统提示词
-    for msg in messages:
-        if msg.get("role") == "system":
-            result.append(msg)
-            break
-    if not result:
-        result = []
-
-    # 跟踪工具调用和结果
-    tool_call_map = {}  # tool_call_id -> 对应的assistant消息
-    tool_result_map = {}  # tool_call_id -> 对应的tool消息
-    read_file_map = {}  # file_path -> 对应的(tool_call_id, index)
-    grep_search_ids = []  # 所有grep_search的id，按时间顺序
-    list_files_ids = []  # 所有list_files的id，按时间顺序
-    run_shell_ids = []  # 所有run_shell的id，按时间顺序
-    recent_tool_ids = []  # 最近3个tool_result的id
-
-    i = len(result)
-    while i < len(messages):
-        msg = messages[i]
-        if msg.get("role") == "assistant" and "tool_calls" in msg:
-            for tc in msg["tool_calls"]:
-                tc_id = tc["id"]
-                tool_call_map[tc_id] = msg
-                tool_name = tc["function"]["name"]
-                args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-                if tool_name == "read_file" and "file_path" in args:
-                    read_file_map[args["file_path"]] = tc_id
-                elif tool_name == "grep_search":
-                    grep_search_ids.append(tc_id)
-                elif tool_name == "list_files":
-                    list_files_ids.append(tc_id)
-                elif tool_name == "run_shell":
-                    run_shell_ids.append(tc_id)
-            i += 1
-        elif msg.get("role") == "tool":
-            tc_id = msg["tool_call_id"]
-            tool_result_map[tc_id] = msg
-            recent_tool_ids.append(tc_id)
-            i += 1
-        else:
-            i += 1
-
-    # 规则3：最近3个tool_result要保留，此规则最优先
-    keep_ids = set(recent_tool_ids[-3:])
-
-    # 规则1：同一文件被read_file多次读取只保留最新一次
-    for tc_id in read_file_map.values():
-        if tc_id not in keep_ids:
-            keep_ids.add(tc_id)
-
-    # 规则2："grep_search", "list_files", "run_shell"工具的同类搜索结果保留最新3个
-    keep_ids.update(grep_search_ids[-3:])
-    keep_ids.update(list_files_ids[-3:])
-    keep_ids.update(run_shell_ids[-3:])
-
-    # 重新构建消息列表
-    final_result = result.copy()
-    i = len(result)
-    while i < len(messages):
-        msg = messages[i]
-        if msg.get("role") == "assistant" and "tool_calls" in msg:
-            # 只保留需要的tool_call
-            filtered_tool_calls = [tc for tc in msg["tool_calls"] if tc["id"] in keep_ids]
-            if filtered_tool_calls:
-                filtered_msg = msg.copy()
-                filtered_msg["tool_calls"] = filtered_tool_calls
-                # 确保 reasoning_content 也被保留
-                if "reasoning_content" in msg:
-                    filtered_msg["reasoning_content"] = msg["reasoning_content"]
-                final_result.append(filtered_msg)
-                i += 1
-            else:
-                # 没有需要保留的tool_call，跳过此assistant消息
-                i += 1
-        elif msg.get("role") == "tool":
-            if msg["tool_call_id"] in keep_ids:
-                final_result.append(msg)
-            i += 1
-        else:
-            # 其他消息保留
-            final_result.append(msg)
-            i += 1
-
-    token_count = _estimate_tokens(final_result, system_prompt_tokens)
-    return final_result, token_count
 
 def _is_retryable_error(error: Exception) -> bool:
     error_str = str(error).lower()
@@ -151,7 +63,7 @@ def _is_retryable_error(error: Exception) -> bool:
             return True
     return False
 
-def _retry_with_backoff(func, *args, max_retries=3, **kwargs):
+def _retry_with_backoff(func: Callable[..., Any], *args: Any, max_retries: int = 3, **kwargs: Any) -> Any:
     last_exception = None
     for attempt in range(max_retries + 1):
         try:
@@ -175,11 +87,11 @@ class Agent:
         )
         self.thinking = thinking
         self.reasoning_effort = reasoning_effort
-        self.messages = [
+        self.messages: List[Dict[str, Any]] = [
             {"role": "system", "content": build_system_prompt()}
         ]
         self.effective_window = _get_context_window(model)
-        self.total_usage = {
+        self.total_usage: Dict[str, int] = {
             "input_tokens": 0,
             "output_tokens": 0,
             "cached_tokens": 0,
@@ -187,35 +99,37 @@ class Agent:
         self._interrupted = False
         # 缓存系统提示词token，系统提示词不会压缩，不用每次都算
         self._system_prompt_tokens = _estimate_single_message(self.messages[0])
+        self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
 
-    def clear_history(self):
+    def clear_history(self) -> None:
         """清空对话历史，保留系统提示词"""
         self.messages = [{"role": "system", "content": build_system_prompt()}]
         self._interrupted = False
+        self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
 
-    def get_total_usage(self):
+    def get_total_usage(self) -> Dict[str, int]:
         """获取总消费 token 统计"""
         return self.total_usage.copy()
 
-    def compact_context(self):
+    def compact_context(self) -> Tuple[Optional[List[Dict[str, Any]]], int]:
         """压缩对话上下文"""
         if len(self.messages) < 5:
             return None, _estimate_tokens(self.messages, self._system_prompt_tokens)
-        self.messages, _ = self._compress_context(self.messages)
+        self.messages, _ = self._manage_context(self.messages, force_compress=True)
         self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
         return self.messages, self._last_token_count
 
     def abort(self) -> None:
         self._interrupted = True
 
-    def _execute_tool_call(self, tool_name: str, arguments: dict) -> str:
+    def _execute_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """统一工具调用分发"""
         if tool_name == "agent":
             return self._execute_agent_tool(arguments)
         else:
             return execute_tool(tool_name, arguments)
 
-    def _execute_agent_tool(self, arguments: dict) -> str:
+    def _execute_agent_tool(self, arguments: Dict[str, Any]) -> str:
         """运行子 agent"""
         prompt = arguments.get("prompt", "")
         agent_type = arguments.get("type", "general")
@@ -225,8 +139,14 @@ class Agent:
         
         print_subagent_start(agent_type)
         
-        # 从环境变量读取配置
-        model = os.environ.get("OPENAI_MODEL_ID")
+        # 使用与主 agent 相同的配置
+        model = self.model
+        api_base = None
+        api_key = None
+        
+        # 从环境变量读取配置作为备用
+        if not model:
+            model = os.environ.get("OPENAI_MODEL_ID")
         api_base = os.environ.get("OPENAI_BASE_URL")
         api_key = os.environ.get("OPENAI_API_KEY")
         
@@ -241,7 +161,7 @@ class Agent:
         system_prompt = get_prompt_for_agent_type(agent_type)
         tools = get_tools_for_agent_type(agent_type)
         
-        messages = [
+        messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ]
@@ -254,28 +174,30 @@ class Agent:
         subagent_total_output = 0
         subagent_total_cached = 0
         
-        def call_api():
+        def call_api() -> Any:
             current_tokens = _estimate_tokens(messages, system_prompt_tokens)
-            trimmed_messages = messages
-            last_token_count = current_tokens
-            # 当effective_window使用率大于40%时才调用_trim_context
-            if current_tokens > effective_window * 0.4:
-                trimmed_messages, last_token_count = _trim_context(messages, system_prompt_tokens)
+            # 子 agent 使用简化的上下文管理
+            trimmed_messages, _ = self._trim_context_simple(messages, system_prompt_tokens)
             
-            api_kwargs = {
+            api_kwargs: Dict[str, Any] = {
                 "model": model,
                 "messages": trimmed_messages,
                 "tools": tools,
                 "stream": False
             }
             
+            # 使用与主 agent 一致的推理配置
             if "deepseek" in model.lower():
-                api_kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-                api_kwargs["reasoning_effort"] = "high"
+                api_kwargs["extra_body"] = {"thinking": {"type": self.thinking}}
+                api_kwargs["reasoning_effort"] = self.reasoning_effort
             
             return client.chat.completions.create(**api_kwargs)
         
         while True:
+            if self._interrupted:
+                print_abort()
+                break
+                
             response = _retry_with_backoff(call_api)
             message = response.choices[0].message
             
@@ -283,7 +205,14 @@ class Agent:
             if hasattr(response, 'usage') and response.usage:
                 input_tokens = response.usage.prompt_tokens or 0
                 output_tokens = response.usage.completion_tokens or 0
-                cached_tokens = (response.usage.prompt_tokens_details.cache_read if hasattr(response.usage, 'prompt_tokens_details') and response.usage.prompt_tokens_details and hasattr(response.usage.prompt_tokens_details, 'cache_read') else 0) or 0
+                # 尝试多种方式获取 cached tokens
+                cached_tokens = 0
+                try:
+                    if hasattr(response.usage, 'prompt_tokens_details') and response.usage.prompt_tokens_details:
+                        if hasattr(response.usage.prompt_tokens_details, 'cache_read'):
+                            cached_tokens = response.usage.prompt_tokens_details.cache_read or 0
+                except:
+                    pass
                 subagent_total_input += input_tokens
                 subagent_total_output += output_tokens
                 subagent_total_cached += cached_tokens
@@ -303,7 +232,7 @@ class Agent:
                         }
                     })
             
-            assistant_msg = {
+            assistant_msg: Dict[str, Any] = {
                 "role": "assistant",
                 "content": message.content if message.content else None,
                 "tool_calls": tool_calls_dict if tool_calls_dict else None
@@ -319,6 +248,10 @@ class Agent:
                 break
             
             for tool_call in message.tool_calls:
+                if self._interrupted:
+                    print_abort()
+                    break
+                    
                 try:
                     args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
                 except json.JSONDecodeError:
@@ -340,6 +273,9 @@ class Agent:
                     "tool_call_id": tool_call.id,
                     "content": tool_result
                 })
+            
+            if self._interrupted:
+                break
         
         # 把子 agent 的 token 消耗累加到主 agent
         self.total_usage["input_tokens"] += subagent_total_input
@@ -348,48 +284,141 @@ class Agent:
         
         return result or "子 agent 执行完成"
 
-    def _compress_context(self, messages: list) -> tuple:
-        # 总消息小于5条时直接return
-        if len(messages) < 5:
-            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+    def _trim_context_simple(self, messages: List[Dict[str, Any]], system_prompt_tokens: Optional[int] = None) -> Tuple[List[Dict[str, Any]], int]:
+        """简化的上下文裁剪，用于子 agent"""
+        result = []
+        # 保留系统提示词
+        for msg in messages:
+            if msg.get("role") == "system":
+                result.append(msg)
+                break
+        if not result:
+            result = []
+
+        # 跟踪工具调用和结果
+        tool_call_map: Dict[str, Dict[str, Any]] = {}
+        tool_result_map: Dict[str, Dict[str, Any]] = {}
+        read_file_map: Dict[str, str] = {}
+        grep_search_ids: List[str] = []
+        list_files_ids: List[str] = []
+        run_shell_ids: List[str] = []
+        recent_tool_ids: List[str] = []
+
+        i = len(result)
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                for tc in msg["tool_calls"]:
+                    tc_id = tc["id"]
+                    tool_call_map[tc_id] = msg
+                    tool_name = tc["function"]["name"]
+                    args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                    if tool_name == "read_file" and "file_path" in args:
+                        read_file_map[args["file_path"]] = tc_id
+                    elif tool_name == "grep_search":
+                        grep_search_ids.append(tc_id)
+                    elif tool_name == "list_files":
+                        list_files_ids.append(tc_id)
+                    elif tool_name == "run_shell":
+                        run_shell_ids.append(tc_id)
+                i += 1
+            elif msg.get("role") == "tool":
+                tc_id = msg["tool_call_id"]
+                tool_result_map[tc_id] = msg
+                recent_tool_ids.append(tc_id)
+                i += 1
+            else:
+                i += 1
+
+        # 规则3：最近3个tool_result要保留，此规则最优先
+        keep_ids = set(recent_tool_ids[-3:])
+
+        # 规则1：同一文件被read_file多次读取只保留最新一次
+        for tc_id in read_file_map.values():
+            if tc_id not in keep_ids:
+                keep_ids.add(tc_id)
+
+        # 规则2："grep_search", "list_files", "run_shell"工具的同类搜索结果保留最新3个
+        keep_ids.update(grep_search_ids[-3:])
+        keep_ids.update(list_files_ids[-3:])
+        keep_ids.update(run_shell_ids[-3:])
+
+        # 重新构建消息列表
+        final_result = result.copy()
+        i = len(result)
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                filtered_tool_calls = [tc for tc in msg["tool_calls"] if tc["id"] in keep_ids]
+                if filtered_tool_calls:
+                    filtered_msg = msg.copy()
+                    filtered_msg["tool_calls"] = filtered_tool_calls
+                    if "reasoning_content" in msg:
+                        filtered_msg["reasoning_content"] = msg["reasoning_content"]
+                    final_result.append(filtered_msg)
+                    i += 1
+                else:
+                    i += 1
+            elif msg.get("role") == "tool":
+                if msg["tool_call_id"] in keep_ids:
+                    final_result.append(msg)
+                i += 1
+            else:
+                final_result.append(msg)
+                i += 1
+
+        token_count = _estimate_tokens(final_result, system_prompt_tokens)
+        return final_result, token_count
+
+    def _manage_context(self, messages: List[Dict[str, Any]], force_compress: bool = False) -> Tuple[List[Dict[str, Any]], int]:
+        """统一的上下文管理方法：先裁剪，超过阈值再压缩"""
+        # 第一步：裁剪上下文
+        trimmed, token_count = self._trim_context_simple(messages, self._system_prompt_tokens)
+        
+        # 如果不需要强制压缩且 token 数在阈值内，直接返回
+        if not force_compress and token_count <= self.effective_window * 0.5:
+            return trimmed, token_count
+        
+        # 第二步：压缩上下文（使用摘要）
+        if len(trimmed) < 5:
+            return trimmed, token_count
         
         # 找到系统提示词
         system_msg = None
-        for msg in messages:
+        for msg in trimmed:
             if msg.get("role") == "system":
                 system_msg = msg
                 break
         
         # 找到最新用户消息
         last_user_msg = None
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                last_user_msg = messages[i]
+        for i in range(len(trimmed) - 1, -1, -1):
+            if trimmed[i].get("role") == "user":
+                last_user_msg = trimmed[i]
                 break
         
         if not system_msg or not last_user_msg:
-            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+            return trimmed, token_count
         
         # 找到至少2轮对话（包含最新用户消息）
-        dialog_history = []
+        dialog_history: List[Dict[str, Any]] = []
         user_count = 0
-        i = len(messages) - 1
+        i = len(trimmed) - 1
         while i >= 0 and user_count < 2:
-            msg = messages[i]
+            msg = trimmed[i]
             dialog_history.insert(0, msg)
             if msg.get("role") == "user":
                 user_count += 1
             i -= 1
         
         # 准备待压缩的历史（去掉系统提示词和dialog_history）
-        history_to_compress = []
+        history_to_compress: List[Dict[str, Any]] = []
         i = 0
-        while i < len(messages):
-            msg = messages[i]
+        while i < len(trimmed):
+            msg = trimmed[i]
             if msg.get("role") == "system":
                 i += 1
                 continue
-            # 检查是否在dialog_history中
             found = False
             for dm in dialog_history:
                 if dm == msg:
@@ -400,7 +429,7 @@ class Agent:
             i += 1
         
         if not history_to_compress:
-            return messages, _estimate_tokens(messages, self._system_prompt_tokens)
+            return trimmed, token_count
         
         # 调用大模型总结历史
         summary_prompt = """请将以下对话历史总结为简洁的摘要，保持关键信息，删除冗余内容：
@@ -428,11 +457,27 @@ class Agent:
                 stream=False
             )
             summary = response.choices[0].message.content
+            
+            # 统计压缩对话的 token 消耗
+            if hasattr(response, 'usage') and response.usage:
+                input_tokens = response.usage.prompt_tokens or 0
+                output_tokens = response.usage.completion_tokens or 0
+                # 尝试多种方式获取 cached tokens
+                cached_tokens = 0
+                try:
+                    if hasattr(response.usage, 'prompt_tokens_details') and response.usage.prompt_tokens_details:
+                        if hasattr(response.usage.prompt_tokens_details, 'cache_read'):
+                            cached_tokens = response.usage.prompt_tokens_details.cache_read or 0
+                except:
+                    pass
+                self.total_usage["input_tokens"] += input_tokens
+                self.total_usage["output_tokens"] += output_tokens
+                self.total_usage["cached_tokens"] += cached_tokens
         except Exception as e:
             summary = "[历史对话摘要失败，保留原对话]"
         
         # 构建新消息列表
-        new_messages = [system_msg]
+        new_messages: List[Dict[str, Any]] = [system_msg]
         
         # 添加摘要消息（作为系统消息的补充）
         new_messages.append({
@@ -458,24 +503,21 @@ class Agent:
         prev_total_output = self.total_usage["output_tokens"]
         prev_total_cached = self.total_usage["cached_tokens"]
 
-        # 估算当前token数
+        # 估算当前token数并管理上下文
         current_tokens = _estimate_tokens(self.messages, self._system_prompt_tokens)
-        trimmed_messages = self.messages
-        # 当effective_window使用率大于40%时才调用_trim_context
         if current_tokens > self.effective_window * 0.4:
-            trimmed_messages, self._last_token_count = _trim_context(self.messages, self._system_prompt_tokens)
-            # 如果_trim_context后使用率还大于50%，调用_compress_context
-            if self._last_token_count > self.effective_window * 0.5:
-                trimmed_messages, self._last_token_count = self._compress_context(trimmed_messages)
+            trimmed_messages, self._last_token_count = self._manage_context(self.messages)
         else:
+            trimmed_messages = self.messages
             self._last_token_count = current_tokens
 
         # 构建 API 调用参数
-        api_kwargs = {
+        api_kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": trimmed_messages,
             "tools": tool_definitions,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
         
         # 如果是 DeepSeek 模型，添加思考模式配置
@@ -488,8 +530,8 @@ class Agent:
         print_assistant_start()
         assistant_message = ""
         reasoning_content = ""  # 新增：保存思考内容
-        tool_calls = []
-        current_tool_call = None
+        tool_calls: List[Dict[str, Any]] = []
+        current_tool_call: Optional[Dict[str, Any]] = None
 
         for chunk in response:
             if self._interrupted:
@@ -521,7 +563,14 @@ class Agent:
             if chunk.usage:
                 chunk_input = chunk.usage.prompt_tokens or 0
                 chunk_output = chunk.usage.completion_tokens or 0
-                chunk_cached = (chunk.usage.prompt_tokens_details.cache_read if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details and hasattr(chunk.usage.prompt_tokens_details, 'cache_read') else 0) or 0
+                # 尝试多种方式获取 cached tokens
+                chunk_cached = 0
+                try:
+                    if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                        if hasattr(chunk.usage.prompt_tokens_details, 'cache_read'):
+                            chunk_cached = chunk.usage.prompt_tokens_details.cache_read or 0
+                except:
+                    pass
                 # 使用实际的input_tokens更新记录
                 if chunk_input > 0:
                     self._last_token_count = chunk_input
@@ -531,7 +580,7 @@ class Agent:
                 self.total_usage["cached_tokens"] += chunk_cached
 
         if tool_calls:
-            assistant_msg = {
+            assistant_msg: Dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant_message if assistant_message else None,
                 "tool_calls": [{
@@ -548,6 +597,9 @@ class Agent:
                 assistant_msg["reasoning_content"] = reasoning_content
             self.messages.append(assistant_msg)
             for tc in tool_calls:
+                if self._interrupted:
+                    print_abort()
+                    break
                 try:
                     args = json.loads(tc["function"]["arguments"])
                 except json.JSONDecodeError:
@@ -563,7 +615,10 @@ class Agent:
                             "content": "用户取消执行"
                         })
                         continue
-                tool_result = _retry_with_backoff(self._execute_tool_call, tc["function"]["name"], args)
+                try:
+                    tool_result = _retry_with_backoff(self._execute_tool_call, tc["function"]["name"], args)
+                except Exception as e:
+                    tool_result = f"工具执行失败: {e}"
                 print_tool_result(tool_result)
                 self.messages.append({
                     "role": "tool",
@@ -575,7 +630,7 @@ class Agent:
             return
 
         # 保存没有 tool calls 的消息，也需要包含 reasoning_content
-        final_assistant_msg = {
+        final_assistant_msg: Dict[str, Any] = {
             "role": "assistant",
             "content": assistant_message
         }

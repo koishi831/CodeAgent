@@ -79,7 +79,7 @@ def print_billing(input_tokens: int, output_tokens: int, cached_tokens: int, tot
         "cached_tokens": cached_tokens,
     }
     cost, cached_ratio = _calculate_cost(current_usage)
-    console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out , cache {cached_ratio:.1f}%(¥{cost:.4f})[/dim]")
+    console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out (¥{cost:.4f})[/dim]")
     print_total_usage(total_usage)
 
 

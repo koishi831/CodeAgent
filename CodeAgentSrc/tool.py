@@ -22,11 +22,11 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file. Returns the file content with line numbers.",
+            "description": "读取文件内容，返回带行号的文件内容",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "The path to the file to read"},
+                    "file_path": {"type": "string", "description": "要读取的文件路径"},
                 },
                 "required": ["file_path"],
             },
@@ -36,12 +36,12 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+            "description": "写入文件内容，文件不存在则创建，已存在则覆盖",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "The path to the file to write"},
-                    "content": {"type": "string", "description": "The content to write to the file"},
+                    "file_path": {"type": "string", "description": "要写入的文件路径"},
+                    "content": {"type": "string", "description": "要写入的内容"},
                 },
                 "required": ["file_path", "content"],
             },
@@ -51,13 +51,13 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Edit a file by replacing an exact string match with new content. The old_string must match exactly (including whitespace and indentation).",
+            "description": "编辑文件，通过精确匹配字符串替换内容，old_string 必须完全匹配（包括空格和缩进）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "The path to the file to edit"},
-                    "old_string": {"type": "string", "description": "The exact string to find and replace"},
-                    "new_string": {"type": "string", "description": "The string to replace it with"},
+                    "file_path": {"type": "string", "description": "要编辑的文件路径"},
+                    "old_string": {"type": "string", "description": "要查找并替换的精确字符串"},
+                    "new_string": {"type": "string", "description": "用来替换的新字符串"},
                 },
                 "required": ["file_path", "old_string", "new_string"],
             },
@@ -67,12 +67,12 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files matching a glob pattern. Returns matching file paths.",
+            "description": "列出匹配 glob 模式的文件，返回匹配的文件路径",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": 'Glob pattern to match files (e.g., "**/*.ts", "src/**/*")'},
-                    "path": {"type": "string", "description": "Base directory to search from. Defaults to current directory."},
+                    "pattern": {"type": "string", "description": '匹配文件的 glob 模式（例如 "**/*.ts"、"src/**/*"）'},
+                    "path": {"type": "string", "description": "搜索的基础目录，默认为当前目录"},
                 },
                 "required": ["pattern"],
             },
@@ -82,13 +82,13 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "grep_search",
-            "description": "Search for a pattern in files. Returns matching lines with file paths and line numbers.",
+            "description": "在文件中搜索模式，返回匹配的行及文件路径和行号",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "The regex pattern to search for"},
-                    "path": {"type": "string", "description": "Directory or file to search in. Defaults to current directory."},
-                    "include": {"type": "string", "description": 'File glob pattern to include (e.g., "*.ts", "*.py")'},
+                    "pattern": {"type": "string", "description": "要搜索的正则表达式模式"},
+                    "path": {"type": "string", "description": "要搜索的目录或文件，默认为当前目录"},
+                    "include": {"type": "string", "description": '要包含的文件 glob 模式（例如 "*.ts"、"*.py"）'},
                 },
                 "required": ["pattern"],
             },
@@ -98,12 +98,12 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "run_shell",
-            "description": "Execute a shell command and return its output. Use this for running tests, installing packages, git operations, etc.",
+            "description": "执行 shell 命令并返回输出，用于运行测试、安装包、git 操作等",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The shell command to execute"},
-                    "timeout": {"type": "number", "description": "Timeout in milliseconds (default: 30000)"},
+                    "command": {"type": "string", "description": "要执行的 shell 命令"},
+                    "timeout": {"type": "number", "description": "超时时间（毫秒，默认 30000）"},
                 },
                 "required": ["command"],
             },
@@ -113,12 +113,12 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "Fetch a URL and return its content as text. For HTML pages, tags are stripped to return readable text. For JSON/text responses, content is returned directly.",
+            "description": "获取 URL 内容并以文本返回，对于 HTML 页面会去除标签返回可读文本，JSON/文本响应直接返回",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "The URL to fetch"},
-                    "max_length": {"type": "number", "description": "Maximum content length in characters (default 50000)"},
+                    "url": {"type": "string", "description": "要获取的 URL"},
+                    "max_length": {"type": "number", "description": "内容最大长度（字符，默认 50000）"},
                 },
                 "required": ["url"],
             },
@@ -128,13 +128,13 @@ tool_definitions: list[dict] = [
         "type": "function",
         "function": {
             "name": "agent",
-            "description": "Launch a sub agent to handle a task autonomously. Sub agents have isolated context and return their result. Types: 'explore' (read-only), 'plan' (read-only, structured planning), 'general' (full tools).",
+            "description": "启动子 agent 自主处理任务，子 agent 有独立上下文并返回结果，类型：'explore'（只读）、'plan'（只读、结构化规划）、'general'（完整工具）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string", "description": "Short (3-5 word) description of the sub agent's task"},
-                    "prompt": {"type": "string", "description": "Detailed task instructions for the sub agent"},
-                    "type": {"type": "string", "enum": ["explore", "plan", "general"], "description": "Agent type. Default: general"},
+                    "description": {"type": "string", "description": "子 agent 任务的简短描述（3-5 字）"},
+                    "prompt": {"type": "string", "description": "子 agent 的详细任务指令"},
+                    "type": {"type": "string", "enum": ["explore", "plan", "general"], "description": "agent 类型，默认 general"},
                 },
                 "required": ["description", "prompt"],
             },
@@ -143,11 +143,7 @@ tool_definitions: list[dict] = [
 ]
 
 
-_opened_files: set[str] = set()
-
-
 def _read_file(arguments: dict) -> str:
-    global _opened_files
     file_path = arguments.get("file_path")
     if not file_path:
         return "错误：缺少必需参数 file_path"
@@ -157,7 +153,6 @@ def _read_file(arguments: dict) -> str:
             for i, line in enumerate(f, 1):
                 lines.append(f"{i:4d}| {line}")
         content = "".join(lines)
-        _opened_files.add(file_path)
         return content if content else "(空文件)"
     except FileNotFoundError:
         return f"错误：文件不存在: {file_path}"
@@ -168,19 +163,15 @@ def _read_file(arguments: dict) -> str:
 
 
 def _write_file(arguments: dict) -> str:
-    global _opened_files
     file_path = arguments.get("file_path")
     content = arguments.get("content")
     if not file_path:
         return "错误：缺少必需参数 file_path"
     if content is None:
         return "错误：缺少必需参数 content"
-    if file_path not in _opened_files and os.path.exists(file_path):
-        return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
-        _opened_files.add(file_path)
         
         # 检测是否写入记忆目录
         memory_dir = get_memory_dir()
@@ -201,7 +192,6 @@ def _write_file(arguments: dict) -> str:
 
 
 def _edit_file(arguments: dict) -> str:
-    global _opened_files
     file_path = arguments.get("file_path")
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
@@ -211,8 +201,6 @@ def _edit_file(arguments: dict) -> str:
         return "错误：缺少必需参数 old_string"
     if new_string is None:
         return "错误：缺少必需参数 new_string"
-    if file_path not in _opened_files and os.path.exists(file_path):
-        return f"错误：文件未读取，请先使用 read_file 打开: {file_path}"
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -224,7 +212,6 @@ def _edit_file(arguments: dict) -> str:
         new_content = content.replace(old_string, new_string, 1)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
-        _opened_files.add(file_path)
         
         # 检测是否编辑记忆文件，是则更新索引
         memory_dir = get_memory_dir()
@@ -269,7 +256,7 @@ def _grep_search(arguments: dict) -> str:
     try:
         regex = re.compile(pattern)
         matches = []
-        for file_path in Path(path).rglob(include or "*"):
+        for file_path in Path(path).rglob(include if include and include.strip() else "*"):
             if not file_path.is_file():
                 continue
             if any(part in _IGNORE_DIRS for part in file_path.parts):

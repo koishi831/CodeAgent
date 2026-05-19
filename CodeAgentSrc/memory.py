@@ -46,6 +46,9 @@ def _parse_memory_file(file_path: Path) -> Optional[Dict]:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
         
+        # 归一化换行符
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        
         # 匹配 YAML 头部
         match = re.match(r"^---\n(.*?)\n---\n(.*)$", content, re.DOTALL)
         if not match:
