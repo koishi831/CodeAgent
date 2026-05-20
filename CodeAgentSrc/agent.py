@@ -21,7 +21,7 @@ import errno
 import os
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from openai import OpenAI
-from .ui import print_abort, print_divider, print_assistant_start, print_assistant_content, print_billing, print_tool_start, print_tool_result, ask_dangerous_confirmation, print_subagent_start
+from .ui import print_abort, print_divider, print_assistant_start, print_assistant_content, print_billing, print_tool_start, print_tool_result, ask_dangerous_confirmation, print_subagent_start, print_subagent_content
 from .tool import execute_tool, tool_definitions, check_permission, get_tools_for_agent_type
 from .prompt import build_system_prompt
 from .subagent import build_agent_descriptions, get_prompt_for_agent_type, build_subagent_system_prompt
@@ -282,6 +282,7 @@ class Agent:
         - 有独立的上下文
         - 可以是只读的（explore）、规划的（plan）或通用的（general）
         - Token 消耗会累加到主 Agent
+        - 支持流式输出
         
         参数:
             arguments: 工具参数，包含：
@@ -335,7 +336,7 @@ class Agent:
         subagent_total_cached = 0
         
         def call_api() -> Any:
-            """子 Agent 的 API 调用函数"""
+            """子 Agent 的 API 调用函数（流式）"""
             current_tokens = _estimate_tokens(messages, system_prompt_tokens)
             # 子 agent 使用简化的上下文管理
             trimmed_messages, _ = self._trim_context_simple(messages, system_prompt_tokens)
@@ -344,7 +345,8 @@ class Agent:
                 "model": model,
                 "messages": trimmed_messages,
                 "tools": tools,
-                "stream": False
+                "stream": True,
+                "stream_options": {"include_usage": True}
             }
             
             # 使用与主 agent 一致的推理配置
@@ -361,85 +363,107 @@ class Agent:
                 break
                 
             response = _retry_with_backoff(call_api)
-            message = response.choices[0].message
             
-            # 统计 token 消耗
-            if hasattr(response, 'usage') and response.usage:
-                input_tokens = response.usage.prompt_tokens or 0
-                output_tokens = response.usage.completion_tokens or 0
-                # 尝试多种方式获取 cached tokens
-                cached_tokens = 0
-                try:
-                    if hasattr(response.usage, 'prompt_tokens_details') and response.usage.prompt_tokens_details:
-                        if hasattr(response.usage.prompt_tokens_details, 'cache_read'):
-                            cached_tokens = response.usage.prompt_tokens_details.cache_read or 0
-                except:
-                    pass
-                subagent_total_input += input_tokens
-                subagent_total_output += output_tokens
-                subagent_total_cached += cached_tokens
+            assistant_message = ""
+            reasoning_content = ""
+            tool_calls: List[Dict[str, Any]] = []
+            current_tool_call: Optional[Dict[str, Any]] = None
             
-            if message.content:
-                result += message.content
-            
-            # 处理工具调用
-            tool_calls_dict = []
-            if message.tool_calls:
-                for tc in message.tool_calls:
-                    tool_calls_dict.append({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    })
-            
-            assistant_msg: Dict[str, Any] = {
-                "role": "assistant",
-                "content": message.content if message.content else None,
-                "tool_calls": tool_calls_dict if tool_calls_dict else None
-            }
-            
-            # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
-            if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                assistant_msg["reasoning_content"] = message.reasoning_content
-            
-            messages.append(assistant_msg)
-            
-            # 没有工具调用时结束
-            if not message.tool_calls:
-                break
-            
-            # 执行工具调用
-            for tool_call in message.tool_calls:
+            # 处理流式响应
+            for chunk in response:
                 if self._interrupted:
                     print_abort()
                     break
-                    
-                try:
-                    args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-                except json.JSONDecodeError:
-                    args = {}
-                
-                print_tool_start(tool_call.function.name, args)
-                
-                need_confirm, reason = check_permission(tool_call.function.name, args)
-                if need_confirm:
-                    # 子 agent 不进行危险操作，直接拒绝
-                    tool_result = "危险操作被拒绝"
-                else:
-                    tool_result = _retry_with_backoff(execute_tool, tool_call.function.name, args)
-                
-                print_tool_result(tool_result)
-                
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result
-                })
+                # 处理 reasoning_content (思考内容)
+                if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                    reasoning_content += chunk.choices[0].delta.reasoning_content
+                # 处理文本内容
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    assistant_message += content
+                    print_subagent_content(content)
+                # 处理工具调用
+                if chunk.choices[0].delta.tool_calls:
+                    for tool_call_delta in chunk.choices[0].delta.tool_calls:
+                        index = tool_call_delta.index
+                        if current_tool_call is None or current_tool_call.get("index") != index:
+                            current_tool_call = {
+                                "index": index,
+                                "id": tool_call_delta.id,
+                                "function": {
+                                    "name": tool_call_delta.function.name or "",
+                                    "arguments": tool_call_delta.function.arguments or ""
+                                }
+                            }
+                            tool_calls.append(current_tool_call)
+                        else:
+                            current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments or ""
+                # 处理 token 统计
+                if chunk.usage:
+                    chunk_input = chunk.usage.prompt_tokens or 0
+                    chunk_output = chunk.usage.completion_tokens or 0
+                    # 尝试多种方式获取 cached tokens
+                    chunk_cached = 0
+                    try:
+                        if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                            if hasattr(chunk.usage.prompt_tokens_details, 'cache_read'):
+                                chunk_cached = chunk.usage.prompt_tokens_details.cache_read or 0
+                    except:
+                        pass
+                    subagent_total_input += chunk_input
+                    subagent_total_output += chunk_output
+                    subagent_total_cached += chunk_cached
             
             if self._interrupted:
+                break
+            
+            result += assistant_message
+            
+            # 有工具调用的情况
+            if tool_calls:
+                assistant_msg: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_message if assistant_message else None,
+                    "tool_calls": [{
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"]
+                        }
+                    } for tc in tool_calls]
+                }
+                # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
+                if reasoning_content:
+                    assistant_msg["reasoning_content"] = reasoning_content
+                messages.append(assistant_msg)
+                # 执行工具调用
+                for tc in tool_calls:
+                    if self._interrupted:
+                        print_abort()
+                        break
+                    try:
+                        args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    
+                    print_tool_start(tc["function"]["name"], args)
+                    
+                    need_confirm, reason = check_permission(tc["function"]["name"], args)
+                    if need_confirm:
+                        # 子 agent 不进行危险操作，直接拒绝
+                        tool_result = "危险操作被拒绝"
+                    else:
+                        tool_result = _retry_with_backoff(execute_tool, tc["function"]["name"], args)
+                    
+                    print_tool_result(tool_result)
+                    
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": tool_result
+                    })
+            else:
                 break
         
         # 把子 agent 的 token 消耗累加到主 agent

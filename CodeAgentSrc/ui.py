@@ -63,7 +63,18 @@ def print_subagent_start(agent_type: str) -> None:
         "general": "通用",
     }
     name = agent_type_names.get(agent_type, "通用")
-    console.print(f"\n[bold purple]🚀 子Agent({name}):[/bold purple]")
+    console.print(f"\n[bold purple]🚀 子Agent({name}):[/bold purple] ", end="")
+
+
+def print_subagent_content(content: str) -> None:
+    """
+    流式打印子 Agent 输出内容
+    
+    参数:
+        content: 输出文本
+    """
+    sys.stdout.write(content)
+    sys.stdout.flush()
 
 
 def print_abort() -> None:
@@ -124,7 +135,7 @@ def print_total_usage(usage: dict) -> None:
         usage: 消费统计字典
     """
     cost, cached_ratio = _calculate_cost(usage)
-    console.print(f"[dim]累计 Tokens: {usage['input_tokens']} in / {usage['output_tokens']} out , cache {cached_ratio:.1f}%(¥{cost:.4f})[/dim]")
+    console.print(f"[dim]累计 Tokens: {usage['input_tokens']} in / {usage['output_tokens']} out (¥{cost:.4f})[/dim]")
 
 
 def print_memory_content(content: str) -> None:
@@ -156,13 +167,14 @@ def print_billing(input_tokens: int, output_tokens: int, cached_tokens: int, tot
         cached_tokens: 本次缓存 tokens
         total_usage: 累计使用统计字典
     """
-    current_usage = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cached_tokens": cached_tokens,
-    }
-    cost, cached_ratio = _calculate_cost(current_usage)
-    console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out (¥{cost:.4f})[/dim]")
+    # current_usage = {
+    #     "input_tokens": input_tokens,
+    #     "output_tokens": output_tokens,
+    #     "cached_tokens": cached_tokens,
+    # }
+    #cost, cached_ratio = _calculate_cost(current_usage)
+    #console.print(f"\n[dim]本次 Tokens: {input_tokens} in / {output_tokens} out (¥{cost:.4f})[/dim]")
+    console.print(f"\n")
     print_total_usage(total_usage)
 
 
