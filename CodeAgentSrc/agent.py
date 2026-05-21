@@ -44,9 +44,9 @@ def _get_context_window(model: str) -> int:
         model: 模型名称
         
     返回:
-        上下文窗口大小（token），默认 200000
+        上下文窗口大小（token），默认 128000
     """
-    return MODEL_CONTEXT.get(model, 200000)
+    return MODEL_CONTEXT.get(model, 128000)
 
 
 # ========== 重试策略配置 ==========
@@ -109,6 +109,48 @@ def _estimate_tokens(messages: List[Dict[str, Any]], system_prompt_tokens: Optio
             continue
         tokens += _estimate_single_message(msg)
     return tokens
+
+
+def _estimate_tokens_incremental(
+    messages: List[Dict[str, Any]],
+    last_token_count: int,
+    last_message_count: int,
+    system_prompt_tokens: Optional[int] = None
+) -> Tuple[int, int]:
+    """
+    增量估算消息列表的 token 数量
+    
+    如果消息数量增加了，只估算新增部分，加上上次的精确值
+    如果消息数量减少了（被裁剪），重新估算全部
+    
+    参数:
+        messages: 当前消息列表
+        last_token_count: 上次 API 返回的精确 token 数
+        last_message_count: 上次的消息数量
+        system_prompt_tokens: 系统提示词的 token 数（可选，用于缓存）
+        
+    返回:
+        (估算的 token 数, 当前消息数量)
+    """
+    current_count = len(messages)
+    
+    # 消息数量没变，直接返回上次的精确值
+    if current_count == last_message_count:
+        return last_token_count, current_count
+    
+    # 消息数量增加了，只估算新增部分
+    if current_count > last_message_count:
+        new_tokens = 0
+        for i in range(last_message_count, current_count):
+            msg = messages[i]
+            if system_prompt_tokens is not None and msg.get("role") == "system":
+                new_tokens += system_prompt_tokens
+                continue
+            new_tokens += _estimate_single_message(msg)
+        return last_token_count + new_tokens, current_count
+    
+    # 消息数量减少了（被裁剪了），必须重新估算全部
+    return _estimate_tokens(messages, system_prompt_tokens), current_count
 
 
 # ========== 重试机制函数 ==========
@@ -220,6 +262,7 @@ class Agent:
         # 缓存系统提示词token，系统提示词不会压缩，不用每次都算
         self._system_prompt_tokens = _estimate_single_message(self.messages[0])
         self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        self._last_message_count = len(self.messages)
 
     def clear_history(self) -> None:
         """
@@ -228,6 +271,7 @@ class Agent:
         self.messages = [{"role": "system", "content": build_system_prompt()}]
         self._interrupted = False
         self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        self._last_message_count = len(self.messages)
 
     def get_total_usage(self) -> Dict[str, int]:
         """
@@ -247,9 +291,16 @@ class Agent:
             如果消息太少不需要压缩，返回 (None, token_count)
         """
         if len(self.messages) < 5:
-            return None, _estimate_tokens(self.messages, self._system_prompt_tokens)
+            current_tokens, _ = _estimate_tokens_incremental(
+                self.messages,
+                self._last_token_count,
+                self._last_message_count,
+                self._system_prompt_tokens
+            )
+            return None, current_tokens
         self.messages, _ = self._manage_context(self.messages, force_compress=True)
         self._last_token_count = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        self._last_message_count = len(self.messages)
         return self.messages, self._last_token_count
 
     def abort(self) -> None:
@@ -738,13 +789,20 @@ class Agent:
         prev_total_output = self.total_usage["output_tokens"]
         prev_total_cached = self.total_usage["cached_tokens"]
 
-        # 估算当前token数并管理上下文
-        current_tokens = _estimate_tokens(self.messages, self._system_prompt_tokens)
+        # 增量估算当前token数并管理上下文
+        current_tokens, _ = _estimate_tokens_incremental(
+            self.messages,
+            self._last_token_count,
+            self._last_message_count,
+            self._system_prompt_tokens
+        )
         if current_tokens > self.effective_window * 0.4:
             trimmed_messages, self._last_token_count = self._manage_context(self.messages)
+            self._last_message_count = len(trimmed_messages)
         else:
             trimmed_messages = self.messages
             self._last_token_count = current_tokens
+            self._last_message_count = len(trimmed_messages)
 
         # 构建 API 调用参数
         api_kwargs: Dict[str, Any] = {
