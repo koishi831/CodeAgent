@@ -121,7 +121,7 @@ def build_system_prompt():
         完整的系统提示词字符串
     """
     template = SYSTEM_PROMPT_TEMPLATE
-    template = template.replace("{{cwd}}", str(Path.cwd() / "AIWork"))
+    template = template.replace("{{cwd}}", str(Path.cwd()))
     template = template.replace("{{date}}", str(date.today().isoformat()))
     template = template.replace("{{platform}}", f"{platform.system()} {platform.machine()}")
     template = template.replace("{{shell}}", os.environ.get("ComSpec"))
