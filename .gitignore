@@ -12,6 +12,7 @@ __pycache__/
 *.so
 
 备注.txt
+备份/
 test/
 AIWork/
 .codeagent/

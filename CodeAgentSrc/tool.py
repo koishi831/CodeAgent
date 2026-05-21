@@ -521,7 +521,7 @@ def get_tools_for_agent_type(agent_type: str) -> list[dict]:
         对应类型可用的工具定义列表
     """
     if agent_type in ["explore", "plan"]:
-        # explore/plan: 只读工具 (read_file, list_files, grep_search)
+        # explore/plan: 仅本地代码工具 (read_file, list_files, grep_search)
         read_only_tools = ["read_file", "list_files", "grep_search"]
         return [tool for tool in tool_definitions if tool["function"]["name"] in read_only_tools]
     elif agent_type == "general":
