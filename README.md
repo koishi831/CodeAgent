@@ -79,15 +79,6 @@ CodeAgent/
 └── README.md
 ```
 
-## 技术栈
-
-| 技术 | 版本 | 用途 |
-|------|------|------|
-| Python | 3.8+ | 编程语言 |
-| openai | 1.0+ | OpenAI API 客户端 |
-| python-dotenv | 1.0+ | 环境变量管理 |
-| rich | 13.0+ | 终端UI美化 |
-
 ## 项目架构设计
 
 ### 整体架构
@@ -177,11 +168,11 @@ start.py (入口)
 
 **子Agent类型**：
 
-| 类型 | 工具权限 | 用途 |
-|------|----------|------|
+| 类型    | 工具权限                            | 用途              |
+|---------|------------------------------------|------------------|
 | explore | read_file, list_files, grep_search | 代码检索、项目探索 |
-| plan | read_file, list_files, grep_search | 方案规划、任务分解 |
-| general | 全部工具 | 独立执行完整任务 |
+| plan    | read_file, list_files, grep_search | 方案规划、任务分解 |
+| general | 全部工具                            | 独立执行完整任务  |
 
 #### 6. ui.py - 用户界面
 
