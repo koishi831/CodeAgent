@@ -241,7 +241,3 @@ start.py (入口)
 1. 添加系统提示词
 2. 在 `get_tools_for_agent_type` 中配置工具
 3. 在提示词中添加说明
-
-## 许可证
-
-MIT License
