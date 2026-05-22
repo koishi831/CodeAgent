@@ -767,15 +767,16 @@ class Agent:
         
         处理流程：
         1. 添加用户消息到历史
-        2. 检查并管理上下文（必要时裁剪或压缩）
-        3. 调用大模型 API（流式输出）
-        4. 处理响应：
-           - 如果有工具调用，执行工具并递归调用 chat
-           - 如果没有工具调用，显示费用统计并结束
-        5. 统计 token 消耗
+        2. 循环处理：
+           - 检查并管理上下文（必要时裁剪或压缩）
+           - 调用大模型 API（流式输出）
+           - 处理响应：
+             * 如果有工具调用，执行工具并继续循环
+             * 如果没有工具调用，显示费用统计并结束
+        3. 统计 token 消耗
         
         参数:
-            user_message: 用户消息，空字符串表示继续对话（工具结果已添加）
+            user_message: 用户消息
         """
         if user_message:
             self.messages.append({
@@ -789,152 +790,153 @@ class Agent:
         prev_total_output = self.total_usage["output_tokens"]
         prev_total_cached = self.total_usage["cached_tokens"]
 
-        # 增量估算当前token数并管理上下文
-        current_tokens, _ = _estimate_tokens_incremental(
-            self.messages,
-            self._last_token_count,
-            self._last_message_count,
-            self._system_prompt_tokens
-        )
-        if current_tokens > self.effective_window * 0.4:
-            trimmed_messages, self._last_token_count = self._manage_context(self.messages)
-            self._last_message_count = len(trimmed_messages)
-        else:
-            trimmed_messages = self.messages
-            self._last_token_count = current_tokens
-            self._last_message_count = len(trimmed_messages)
+        while True:
+            # 增量估算当前token数并管理上下文
+            current_tokens, _ = _estimate_tokens_incremental(
+                self.messages,
+                self._last_token_count,
+                self._last_message_count,
+                self._system_prompt_tokens
+            )
+            if current_tokens > self.effective_window * 0.4:
+                trimmed_messages, self._last_token_count = self._manage_context(self.messages)
+                self._last_message_count = len(trimmed_messages)
+            else:
+                trimmed_messages = self.messages
+                self._last_token_count = current_tokens
+                self._last_message_count = len(trimmed_messages)
 
-        # 构建 API 调用参数
-        api_kwargs: Dict[str, Any] = {
-            "model": self.model,
-            "messages": trimmed_messages,
-            "tools": tool_definitions,
-            "stream": True,
-            "stream_options": {"include_usage": True}
-        }
-        
-        # 如果是 DeepSeek 模型，添加思考模式配置
-        if "deepseek" in self.model.lower():
-            api_kwargs["extra_body"] = {"thinking": {"type": self.thinking}}
-            api_kwargs["reasoning_effort"] = self.reasoning_effort
-        
-        response = self.client.chat.completions.create(**api_kwargs)
-
-        print_assistant_start()
-        assistant_message = ""
-        reasoning_content = ""  # 保存思考内容（DeepSeek）
-        tool_calls: List[Dict[str, Any]] = []
-        current_tool_call: Optional[Dict[str, Any]] = None
-
-        # 处理流式响应
-        for chunk in response:
-            if self._interrupted:
-                print_abort()
-                return
-            # 处理 reasoning_content (思考内容)
-            if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
-                reasoning_content += chunk.choices[0].delta.reasoning_content
-            # 处理文本内容
-            if chunk.choices[0].delta.content:
-                content = chunk.choices[0].delta.content
-                assistant_message += content
-                print_assistant_content(content)
-            # 处理工具调用
-            if chunk.choices[0].delta.tool_calls:
-                for tool_call_delta in chunk.choices[0].delta.tool_calls:
-                    index = tool_call_delta.index
-                    if current_tool_call is None or current_tool_call.get("index") != index:
-                        current_tool_call = {
-                            "index": index,
-                            "id": tool_call_delta.id,
-                            "function": {
-                                "name": tool_call_delta.function.name or "",
-                                "arguments": tool_call_delta.function.arguments or ""
-                            }
-                        }
-                        tool_calls.append(current_tool_call)
-                    else:
-                        current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments or ""
-            # 处理 token 统计
-            if chunk.usage:
-                chunk_input = chunk.usage.prompt_tokens or 0
-                chunk_output = chunk.usage.completion_tokens or 0
-                # 尝试多种方式获取 cached tokens
-                chunk_cached = 0
-                try:
-                    if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
-                        if hasattr(chunk.usage.prompt_tokens_details, 'cache_read'):
-                            chunk_cached = chunk.usage.prompt_tokens_details.cache_read or 0
-                except:
-                    pass
-                # 使用实际的input_tokens更新记录
-                if chunk_input > 0:
-                    self._last_token_count = chunk_input
-                # 及时累加到总消耗
-                self.total_usage["input_tokens"] += chunk_input
-                self.total_usage["output_tokens"] += chunk_output
-                self.total_usage["cached_tokens"] += chunk_cached
-
-        # 有工具调用的情况
-        if tool_calls:
-            assistant_msg: Dict[str, Any] = {
-                "role": "assistant",
-                "content": assistant_message if assistant_message else None,
-                "tool_calls": [{
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["function"]["name"],
-                        "arguments": tc["function"]["arguments"]
-                    }
-                } for tc in tool_calls]
+            # 构建 API 调用参数
+            api_kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "messages": trimmed_messages,
+                "tools": tool_definitions,
+                "stream": True,
+                "stream_options": {"include_usage": True}
             }
-            # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
-            if reasoning_content:
-                assistant_msg["reasoning_content"] = reasoning_content
-            self.messages.append(assistant_msg)
-            # 执行工具调用
-            for tc in tool_calls:
+            
+            # 如果是 DeepSeek 模型，添加思考模式配置
+            if "deepseek" in self.model.lower():
+                api_kwargs["extra_body"] = {"thinking": {"type": self.thinking}}
+                api_kwargs["reasoning_effort"] = self.reasoning_effort
+            
+            response = self.client.chat.completions.create(**api_kwargs)
+
+            print_assistant_start()
+            assistant_message = ""
+            reasoning_content = ""  # 保存思考内容（DeepSeek）
+            tool_calls: List[Dict[str, Any]] = []
+            current_tool_call: Optional[Dict[str, Any]] = None
+
+            # 处理流式响应
+            for chunk in response:
                 if self._interrupted:
                     print_abort()
-                    break
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    args = {}
-                print_tool_start(tc["function"]["name"], args)
-                need_confirm, reason = check_permission(tc["function"]["name"], args)
-                if need_confirm:
-                    if not ask_dangerous_confirmation(reason):
-                        print_abort()
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": "用户取消执行"
-                        })
-                        continue
-                try:
-                    tool_result = _retry_with_backoff(self._execute_tool_call, tc["function"]["name"], args)
-                except Exception as e:
-                    tool_result = f"工具执行失败: {e}"
-                print_tool_result(tool_result)
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_result
-                })
-            # 继续对话，发送工具结果给模型
-            self.chat("")
-            return
+                    return
+                # 处理 reasoning_content (思考内容)
+                if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                    reasoning_content += chunk.choices[0].delta.reasoning_content
+                # 处理文本内容
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    assistant_message += content
+                    print_assistant_content(content)
+                # 处理工具调用
+                if chunk.choices[0].delta.tool_calls:
+                    for tool_call_delta in chunk.choices[0].delta.tool_calls:
+                        index = tool_call_delta.index
+                        if current_tool_call is None or current_tool_call.get("index") != index:
+                            current_tool_call = {
+                                "index": index,
+                                "id": tool_call_delta.id,
+                                "function": {
+                                    "name": tool_call_delta.function.name or "",
+                                    "arguments": tool_call_delta.function.arguments or ""
+                                }
+                            }
+                            tool_calls.append(current_tool_call)
+                        else:
+                            current_tool_call["function"]["arguments"] += tool_call_delta.function.arguments or ""
+                # 处理 token 统计
+                if chunk.usage:
+                    chunk_input = chunk.usage.prompt_tokens or 0
+                    chunk_output = chunk.usage.completion_tokens or 0
+                    # 尝试多种方式获取 cached tokens
+                    chunk_cached = 0
+                    try:
+                        if hasattr(chunk.usage, 'prompt_tokens_details') and chunk.usage.prompt_tokens_details:
+                            if hasattr(chunk.usage.prompt_tokens_details, 'cache_read'):
+                                chunk_cached = chunk.usage.prompt_tokens_details.cache_read or 0
+                    except:
+                        pass
+                    # 使用实际的input_tokens更新记录
+                    if chunk_input > 0:
+                        self._last_token_count = chunk_input
+                    # 及时累加到总消耗
+                    self.total_usage["input_tokens"] += chunk_input
+                    self.total_usage["output_tokens"] += chunk_output
+                    self.total_usage["cached_tokens"] += chunk_cached
 
-        # 没有工具调用的情况，保存消息并显示费用
-        final_assistant_msg: Dict[str, Any] = {
-            "role": "assistant",
-            "content": assistant_message
-        }
-        if reasoning_content:
-            final_assistant_msg["reasoning_content"] = reasoning_content
-        self.messages.append(final_assistant_msg)
+            # 有工具调用的情况
+            if tool_calls:
+                assistant_msg: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_message if assistant_message else None,
+                    "tool_calls": [{
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"]
+                        }
+                    } for tc in tool_calls]
+                }
+                # 如果有 reasoning_content，必须保存下来（DeepSeek 要求回传）
+                if reasoning_content:
+                    assistant_msg["reasoning_content"] = reasoning_content
+                self.messages.append(assistant_msg)
+                # 执行工具调用
+                for tc in tool_calls:
+                    if self._interrupted:
+                        print_abort()
+                        return
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        args = {}
+                    print_tool_start(tc["function"]["name"], args)
+                    need_confirm, reason = check_permission(tc["function"]["name"], args)
+                    if need_confirm:
+                        if not ask_dangerous_confirmation(reason):
+                            print_abort()
+                            self.messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": "用户取消执行"
+                            })
+                            continue
+                    try:
+                        tool_result = _retry_with_backoff(self._execute_tool_call, tc["function"]["name"], args)
+                    except Exception as e:
+                        tool_result = f"工具执行失败: {e}"
+                    print_tool_result(tool_result)
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": tool_result
+                    })
+                # 继续循环，发送工具结果给模型
+                continue
+
+            # 没有工具调用的情况，保存消息并显示费用
+            final_assistant_msg: Dict[str, Any] = {
+                "role": "assistant",
+                "content": assistant_message
+            }
+            if reasoning_content:
+                final_assistant_msg["reasoning_content"] = reasoning_content
+            self.messages.append(final_assistant_msg)
+            break
 
         # 计算本次消耗 = 当前累计 - 调用前累计
         this_input = self.total_usage["input_tokens"] - prev_total_input
