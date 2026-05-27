@@ -383,14 +383,21 @@ def _run_shell(arguments: dict) -> str:
             command,
             shell=True,
             capture_output=True,
-            text=True,
             timeout=timeout_sec
         )
         parts = []
         if result.stdout:
-            parts.append(result.stdout)
+            try:
+                stdout_text = result.stdout.decode("utf-8", errors="replace")
+            except UnicodeDecodeError:
+                stdout_text = result.stdout.decode("gbk", errors="replace")
+            parts.append(stdout_text)
         if result.stderr:
-            parts.append(f"[STDERR]\n{result.stderr}")
+            try:
+                stderr_text = result.stderr.decode("utf-8", errors="replace")
+            except UnicodeDecodeError:
+                stderr_text = result.stderr.decode("gbk", errors="replace")
+            parts.append(f"[STDERR]\n{stderr_text}")
         
         # 检测是否删除了记忆文件，是则更新 MEMORY.md
         memory_dir = get_memory_dir()
