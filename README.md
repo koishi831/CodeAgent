@@ -79,27 +79,6 @@ CodeAgent/
 └── README.md
 ```
 
-## 项目架构设计
-
-### 整体架构
-
-```
-start.py (入口)
-  │
-  └─> __main__.py (REPL)
-       │
-       └─> agent.py (核心逻辑)
-            │
-            ├─> ui.py (用户界面)
-            ├─> tool.py (工具系统)
-            ├─> prompt.py (提示词)
-            │    │
-            │    └─> memory.py (记忆系统)
-            └─> subagent.py (子Agent)
-                 │
-                 └─> memory.py (记忆系统)
-```
-
 ### 核心模块设计思路
 
 #### 1. agent.py - 核心Agent类
